@@ -1,0 +1,11 @@
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+*Zone.Identifier
+
+# Claude
+.claude/
