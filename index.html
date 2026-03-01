@@ -1,0 +1,3848 @@
+<!DOCTYPE html>
+<html lang="ko" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ScrollSnap</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
+            mono: ['"SF Mono"', '"Cascadia Code"', '"Fira Code"', 'Consolas', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .animate-pulse-dot { animation: pulse-dot 1s ease-in-out infinite; }
+    @keyframes spin-slow { to { transform: rotate(360deg); } }
+    .animate-spin-slow { animation: spin-slow 2s linear infinite; }
+    @keyframes slide-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .animate-slide-in { animation: slide-in 300ms ease-out; }
+    /* Dark scrollbars */
+    * { scrollbar-width: thin; scrollbar-color: #3f3f46 transparent; }
+    *::-webkit-scrollbar { width: 6px; height: 6px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+    *::-webkit-scrollbar-thumb:hover { background: #52525b; }
+    *::-webkit-scrollbar-corner { background: transparent; }
+  </style>
+</head>
+<body class="bg-zinc-900 text-zinc-100 font-sans h-full">
+  <div id="root" class="h-full"></div>
+<script>
+'use strict';
+
+var h = React.createElement;
+var useState = React.useState;
+var useReducer = React.useReducer;
+var useEffect = React.useEffect;
+var useCallback = React.useCallback;
+var useRef = React.useRef;
+var Fragment = React.Fragment;
+
+/* ═══════════════════════════════════════════════════════════════
+   Design Tokens
+   ═══════════════════════════════════════════════════════════════ */
+
+var S = {
+  topBar: 'bg-zinc-900 border-b border-zinc-700 h-12 px-4 flex items-center gap-4',
+  statusBar: 'bg-zinc-900 border-t border-zinc-700 h-8 px-4 flex items-center gap-3 text-xs font-mono text-zinc-500',
+  sidebar: 'w-[340px] min-w-[320px] bg-zinc-800 border-r border-zinc-700 p-4 overflow-y-auto flex-shrink-0',
+  mainContent: 'flex-1 min-w-0 bg-zinc-900 flex flex-col relative overflow-hidden',
+  mainLayout: 'flex flex-1 min-h-0 overflow-hidden',
+
+  sectionTitle: 'text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2',
+  sectionDivider: 'border-t border-zinc-700 my-4',
+
+  btnPrimary: 'bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white px-4 py-2.5 rounded-lg font-medium transition-all duration-150 w-full text-sm',
+  btnDanger: 'bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white px-4 py-2.5 rounded-lg font-medium transition-all duration-150 w-full text-sm',
+  btnSecondary: 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100 px-4 py-2.5 rounded-lg transition-colors duration-150 w-full text-sm',
+  btnGhost: 'hover:bg-zinc-700/50 text-zinc-300 px-3 py-2 rounded-lg transition-colors duration-150 text-sm',
+  btnDisabled: 'opacity-50 cursor-not-allowed pointer-events-none',
+
+  select: 'bg-zinc-700 border border-zinc-600 text-zinc-100 rounded-lg px-3 py-2 text-sm w-full focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none',
+
+  card: 'bg-zinc-800 border border-zinc-700 rounded-xl p-4',
+  badge: 'bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded text-xs inline-flex items-center gap-1',
+
+  segContainer: 'bg-zinc-700 rounded-lg p-0.5 inline-flex w-full',
+  segActive: 'bg-blue-600 text-white rounded-md px-3 py-1.5 text-sm font-medium flex-1 text-center transition-all duration-150 cursor-default',
+  segInactive: 'bg-transparent text-zinc-400 rounded-md px-3 py-1.5 text-sm flex-1 text-center cursor-pointer hover:text-zinc-200 transition-all duration-150',
+
+  tabContainer: 'bg-zinc-800 rounded-lg p-0.5 inline-flex gap-0.5',
+  tabActive: 'bg-zinc-700 text-zinc-100 px-3 py-1 rounded-md text-sm font-medium shadow-sm inline-flex items-center gap-1.5 transition-all duration-150',
+  tabInactive: 'text-zinc-400 px-3 py-1 rounded-md text-sm inline-flex items-center gap-1.5 hover:text-zinc-200 hover:bg-zinc-700/50 transition-all duration-150 cursor-pointer',
+
+  statLabel: 'text-xs text-zinc-500 mb-0.5',
+  statValue: 'text-2xl font-bold font-mono text-zinc-100',
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Icon Factory
+   ═══════════════════════════════════════════════════════════════ */
+
+function mkIcon(els) {
+  return function(props) {
+    var p = props || {};
+    var size = p.size || 16;
+    var cn = p.className || '';
+    return h('svg', {
+      xmlns: 'http://www.w3.org/2000/svg', width: size, height: size,
+      viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+      strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', className: cn,
+    }, els.map(function(el, i) {
+      return h(el[0], Object.assign({ key: i }, el[1]));
+    }));
+  };
+}
+
+var ICamera = mkIcon([
+  ['path', {d:'M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z'}],
+  ['circle', {cx:'12',cy:'13',r:'4'}],
+]);
+var IDownload = mkIcon([
+  ['path', {d:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'}],
+  ['polyline', {points:'7 10 12 15 17 10'}],
+  ['line', {x1:'12',y1:'15',x2:'12',y2:'3'}],
+]);
+var IType = mkIcon([
+  ['polyline', {points:'4 7 4 4 20 4 20 7'}],
+  ['line', {x1:'9',y1:'20',x2:'15',y2:'20'}],
+  ['line', {x1:'12',y1:'4',x2:'12',y2:'20'}],
+]);
+var IClipboard = mkIcon([
+  ['path', {d:'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2'}],
+  ['rect', {x:'8',y:'2',width:'8',height:'4',rx:'1',ry:'1'}],
+]);
+var IGear = mkIcon([
+  ['circle', {cx:'12',cy:'12',r:'3'}],
+  ['path', {d:'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'}],
+]);
+var IMonitor = mkIcon([
+  ['rect', {x:'2',y:'3',width:'20',height:'14',rx:'2',ry:'2'}],
+  ['line', {x1:'8',y1:'21',x2:'16',y2:'21'}],
+  ['line', {x1:'12',y1:'17',x2:'12',y2:'21'}],
+]);
+var ILoader = mkIcon([
+  ['line', {x1:'12',y1:'2',x2:'12',y2:'6'}],
+  ['line', {x1:'12',y1:'18',x2:'12',y2:'22'}],
+  ['line', {x1:'4.93',y1:'4.93',x2:'7.76',y2:'7.76'}],
+  ['line', {x1:'16.24',y1:'16.24',x2:'19.07',y2:'19.07'}],
+  ['line', {x1:'2',y1:'12',x2:'6',y2:'12'}],
+  ['line', {x1:'18',y1:'12',x2:'22',y2:'12'}],
+  ['line', {x1:'4.93',y1:'19.07',x2:'7.76',y2:'16.24'}],
+  ['line', {x1:'16.24',y1:'7.76',x2:'19.07',y2:'4.93'}],
+]);
+var IGrid = mkIcon([
+  ['rect', {x:'3',y:'3',width:'18',height:'18',rx:'2',ry:'2'}],
+  ['line', {x1:'3',y1:'9',x2:'21',y2:'9'}],
+  ['line', {x1:'3',y1:'15',x2:'21',y2:'15'}],
+  ['line', {x1:'9',y1:'3',x2:'9',y2:'21'}],
+  ['line', {x1:'15',y1:'3',x2:'15',y2:'21'}],
+]);
+
+/* ═══════════════════════════════════════════════════════════════
+   State Management
+   ═══════════════════════════════════════════════════════════════ */
+
+var APP_VERSION = '0.2.5';
+
+var MODES = {
+  SC: 'scroll-capture',
+  FR: 'file-receive',
+  BT: 'block-text',
+  SET: 'settings',
+};
+
+var OCR_LABELS = {
+  'tesseract': 'Tesseract (로컬)',
+  'cloud-vision': 'Google Cloud Vision',
+  'llm-vision': 'LLM Vision',
+  'llm-openai': 'OpenAI',
+  'llm-anthropic': 'Anthropic',
+  'llm-gemini': 'Gemini',
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Capture Engine — NCC Matching + Progressive Strip Extraction
+   ═══════════════════════════════════════════════════════════════ */
+
+var CaptureEngine = {
+  // Convert ImageData to grayscale Uint8Array (half-scale for speed)
+  toGrayHalf: function(imageData) {
+    var w = imageData.width;
+    var h = imageData.height;
+    var hw = Math.floor(w / 2);
+    var hh = Math.floor(h / 2);
+    var d = imageData.data;
+    var out = new Uint8Array(hw * hh);
+    for (var y = 0; y < hh; y++) {
+      for (var x = 0; x < hw; x++) {
+        var sx = x * 2;
+        var sy = y * 2;
+        var i = (sy * w + sx) * 4;
+        out[y * hw + x] = Math.round(d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114);
+      }
+    }
+    return { data: out, width: hw, height: hh };
+  },
+
+  // NCC matching: find best vertical offset (deltaY) between prev and curr frames
+  // Returns { deltaY, confidence } where deltaY is in original (full-scale) pixels
+  nccMatch: function(prevGray, currGray, direction) {
+    var isVert = direction !== 'horizontal';
+    var w = prevGray.width;
+    var h = prevGray.height;
+    var pd = prevGray.data;
+    var cd = currGray.data;
+
+    // Search range: 0 to 50% of height (vertical) or width (horizontal)
+    var maxShift = Math.floor((isVert ? h : w) * 0.5);
+    var minShift = 2; // 4px full-scale minimum to avoid noise
+    var bestNCC = -1;
+    var bestShift = 0;
+
+    // Store NCC values per shift for post-analysis
+    var nccArr = new Float64Array(maxShift + 1);
+
+    // Use center strip for matching (40% width centered)
+    var stripX0 = Math.floor(w * 0.3);
+    var stripX1 = Math.floor(w * 0.7);
+    var stripW = stripX1 - stripX0;
+
+    for (var shift = minShift; shift <= maxShift; shift++) {
+      // Compare: prev bottom region vs curr top region
+      var overlapH = isVert ? (h - shift) : h;
+      var overlapW = isVert ? stripW : (w - shift);
+      if (overlapH < 20 || overlapW < 20) continue;
+
+      var sumP = 0, sumC = 0, sumPP = 0, sumCC = 0, sumPC = 0;
+      var n = 0;
+      // Sample every 2nd pixel for speed
+      for (var y = 0; y < overlapH; y += 2) {
+        for (var x = 0; x < overlapW; x += 2) {
+          var px, py, cx, cy;
+          if (isVert) {
+            px = stripX0 + x; py = shift + y;
+            cx = stripX0 + x; cy = y;
+          } else {
+            px = shift + x; py = y;
+            cx = x; cy = y;
+          }
+          var pv = pd[py * w + px];
+          var cv = cd[cy * w + cx];
+          sumP += pv; sumC += cv;
+          sumPP += pv * pv; sumCC += cv * cv;
+          sumPC += pv * cv;
+          n++;
+        }
+      }
+      if (n < 10) continue;
+      var meanP = sumP / n;
+      var meanC = sumC / n;
+      var varP = sumPP / n - meanP * meanP;
+      var varC = sumCC / n - meanC * meanC;
+      var cov = sumPC / n - meanP * meanC;
+      var denom = Math.sqrt(varP * varC);
+      var ncc = denom > 0 ? cov / denom : 0;
+
+      nccArr[shift] = ncc;
+      if (ncc > bestNCC) {
+        bestNCC = ncc;
+        bestShift = shift;
+      }
+    }
+
+    // Anti-periodic: find the SMALLEST shift within 5% of the global max NCC.
+    // For periodic content (tables), multiple shifts produce high NCC.
+    // The smallest valid shift is most likely the true scroll amount.
+    var nccThreshold = bestNCC * 0.95;
+    var finalShift = bestShift;
+    for (var s = minShift; s < bestShift; s++) {
+      if (nccArr[s] >= nccThreshold) {
+        finalShift = s;
+        break;
+      }
+    }
+
+    // Convert half-scale shift back to full-scale
+    return { deltaY: finalShift * 2, confidence: nccArr[finalShift] || bestNCC };
+  },
+
+  // Extract new content strip from current frame based on deltaY
+  extractStrip: function(canvas, ctx, videoEl, deltaY, direction) {
+    var w = canvas.width;
+    var h = canvas.height;
+    var isVert = direction !== 'horizontal';
+    if (isVert) {
+      var stripH = Math.min(deltaY, h);
+      if (stripH <= 0) return null;
+      return ctx.getImageData(0, h - stripH, w, stripH);
+    } else {
+      var stripW = Math.min(deltaY, w);
+      if (stripW <= 0) return null;
+      return ctx.getImageData(w - stripW, 0, stripW, h);
+    }
+  },
+
+  // Merge strips into a chunk Blob and return a Blob URL
+  mergeStripsToBlob: function(strips, direction, callback) {
+    var isVert = direction !== 'horizontal';
+    if (strips.length === 0) { callback(null); return; }
+    var totalH = 0, totalW = 0;
+    var w0 = strips[0].width;
+    var h0 = strips[0].height;
+    if (isVert) {
+      totalW = w0;
+      for (var i = 0; i < strips.length; i++) totalH += strips[i].height;
+    } else {
+      totalH = h0;
+      for (var i = 0; i < strips.length; i++) totalW += strips[i].width;
+    }
+    var c = document.createElement('canvas');
+    c.width = totalW; c.height = totalH;
+    var cx = c.getContext('2d');
+    var offset = 0;
+    for (var i = 0; i < strips.length; i++) {
+      if (isVert) {
+        cx.putImageData(strips[i], 0, offset);
+        offset += strips[i].height;
+      } else {
+        cx.putImageData(strips[i], offset, 0);
+        offset += strips[i].width;
+      }
+    }
+    c.toBlob(function(blob) {
+      var url = URL.createObjectURL(blob);
+      callback({ url: url, width: totalW, height: totalH });
+    });
+  },
+
+  // Assemble final image from chunk blobs + remaining strips
+  assembleFinal: function(chunks, strips, direction, onProgress, onComplete) {
+    var isVert = direction !== 'horizontal';
+    // Load all chunk images
+    var images = [];
+    var loaded = 0;
+    var totalParts = chunks.length + (strips.length > 0 ? 1 : 0);
+    if (totalParts === 0) { onComplete(null); return; }
+
+    function onPartReady() {
+      loaded++;
+      onProgress(Math.round(loaded / totalParts * 100));
+      if (loaded === totalParts) {
+        compose();
+      }
+    }
+
+    // Load chunk blobs as images
+    for (var i = 0; i < chunks.length; i++) {
+      (function(idx) {
+        var img = new Image();
+        img.onload = function() {
+          images[idx] = { img: img, w: chunks[idx].width, h: chunks[idx].height };
+          onPartReady();
+        };
+        img.src = chunks[idx].url;
+      })(i);
+    }
+
+    // Merge remaining strips into one more part
+    if (strips.length > 0) {
+      CaptureEngine.mergeStripsToBlob(strips, direction, function(chunk) {
+        if (chunk) {
+          var img = new Image();
+          img.onload = function() {
+            images[chunks.length] = { img: img, w: chunk.width, h: chunk.height };
+            URL.revokeObjectURL(chunk.url);
+            onPartReady();
+          };
+          img.src = chunk.url;
+        } else {
+          totalParts--;
+          if (loaded === totalParts) compose();
+        }
+      });
+    }
+
+    function compose() {
+      // Calculate total size
+      var totalW = 0, totalH = 0;
+      for (var i = 0; i < images.length; i++) {
+        if (!images[i]) continue;
+        if (isVert) {
+          totalW = Math.max(totalW, images[i].w);
+          totalH += images[i].h;
+        } else {
+          totalW += images[i].w;
+          totalH = Math.max(totalH, images[i].h);
+        }
+      }
+
+      // Handle canvas height limits — segment if needed
+      var MAX_DIM = 16000;
+      if ((isVert && totalH > MAX_DIM) || (!isVert && totalW > MAX_DIM)) {
+        // For now, clamp to MAX_DIM (multi-segment in future)
+        if (isVert) totalH = Math.min(totalH, MAX_DIM);
+        else totalW = Math.min(totalW, MAX_DIM);
+      }
+
+      var c = document.createElement('canvas');
+      c.width = totalW; c.height = totalH;
+      var cx = c.getContext('2d');
+      var offset = 0;
+      for (var i = 0; i < images.length; i++) {
+        if (!images[i]) continue;
+        if (isVert) {
+          if (offset + images[i].h > totalH) break;
+          cx.drawImage(images[i].img, 0, offset);
+          offset += images[i].h;
+        } else {
+          if (offset + images[i].w > totalW) break;
+          cx.drawImage(images[i].img, offset, 0);
+          offset += images[i].w;
+        }
+      }
+
+      // Revoke chunk blob URLs
+      for (var i = 0; i < chunks.length; i++) {
+        URL.revokeObjectURL(chunks[i].url);
+      }
+
+      onComplete({
+        canvas: c,
+        width: totalW,
+        height: totalH,
+      });
+    }
+  },
+
+  // Estimate memory usage in bytes
+  estimateMemory: function(strips, chunks) {
+    var mem = 0;
+    for (var i = 0; i < strips.length; i++) {
+      mem += strips[i].width * strips[i].height * 4;
+    }
+    // Chunk blobs are in browser blob storage, not heap — but count conservatively
+    for (var i = 0; i < chunks.length; i++) {
+      mem += chunks[i].width * chunks[i].height * 0.5; // ~50% compressed
+    }
+    return mem;
+  },
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Visual Decoder — Color Grid Decoding + Calibration
+   ═══════════════════════════════════════════════════════════════ */
+
+var VisualDecoder = (function() {
+  // Default palette: Black=00, Blue=01, Red=10, White=11
+  var DEFAULT_PALETTE = [[0,0,0],[0,0,255],[255,0,0],[255,255,255]];
+
+  // Grid parameters (Standard class)
+  var GRID_COLS = 96;
+  var GRID_ROWS = 54;
+  var HEADER_CELLS = 32; // 8 bytes = 32 cells
+  var DATA_CELLS = GRID_COLS * GRID_ROWS - HEADER_CELLS; // 5152
+  var BYTES_PER_FRAME = Math.floor(DATA_CELLS / 4); // 1288
+  var MAGIC_0 = 0x53; // 'S'
+  var MAGIC_1 = 0x43; // 'C'
+
+  // Detect grid bounds in capture frame (handles resolution mismatch / letterboxing)
+  // Returns { offsetX, offsetY, cellW, cellH } or null
+  function detectGridBounds(imgData) {
+    var w = imgData.width;
+    var h2 = imgData.height;
+    var data = imgData.data;
+    var thresh = 40;
+    // Find topY: first row with a bright pixel
+    var topY = -1;
+    for (var y = 0; y < h2 && topY < 0; y++) {
+      for (var x = 0; x < w; x += 4) {
+        var idx = (y * w + x) * 4;
+        if (data[idx] > thresh || data[idx + 1] > thresh || data[idx + 2] > thresh) { topY = y; break; }
+      }
+    }
+    if (topY < 0) return null;
+    // Find leftX: first column with a bright pixel (scan top area)
+    var leftX = -1;
+    var scanBottom = Math.min(topY + 60, h2);
+    for (var x = 0; x < w && leftX < 0; x++) {
+      for (var y = topY; y < scanBottom; y++) {
+        var idx = (y * w + x) * 4;
+        if (data[idx] > thresh || data[idx + 1] > thresh || data[idx + 2] > thresh) { leftX = x; break; }
+      }
+    }
+    if (leftX < 0) return null;
+    // Assume grid is centered: rightX mirrors leftX
+    var gridW = w - 2 * leftX;
+    var gridH = h2 - 2 * topY;
+    // Sanity: grid aspect should be roughly 96:54 (16:9)
+    var expectedRatio = GRID_COLS / GRID_ROWS;
+    var actualRatio = gridW / gridH;
+    // If ratio is way off, try assuming only horizontal letterbox (topY=0)
+    if (Math.abs(actualRatio - expectedRatio) > 0.3) {
+      gridH = Math.round(gridW / expectedRatio);
+      topY = Math.max(0, Math.round((h2 - gridH) / 2));
+    }
+    var cellW = gridW / GRID_COLS;
+    var cellH = gridH / GRID_ROWS;
+    if (cellW < 2 || cellH < 2) return null;
+    return { offsetX: leftX, offsetY: topY, cellW: cellW, cellH: cellH };
+  }
+
+  function nearestColor(r, g, b, palette) {
+    var best = 0;
+    var minDist = Infinity;
+    for (var i = 0; i < palette.length; i++) {
+      var pr = palette[i][0], pg = palette[i][1], pb = palette[i][2];
+      var dist = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
+      if (dist < minDist) { minDist = dist; best = i; }
+    }
+    return best;
+  }
+
+  // Sample center 10x10 of a cell, return average RGB
+  function sampleCell(imgData, cellX, cellY, cellW, cellH) {
+    var data = imgData.data;
+    var imgW = imgData.width;
+    var marginX = Math.floor((cellW - Math.min(10, cellW)) / 2);
+    var marginY = Math.floor((cellH - Math.min(10, cellH)) / 2);
+    var sampleW = Math.min(10, cellW);
+    var sampleH = Math.min(10, cellH);
+    var startX = cellX + marginX;
+    var startY = cellY + marginY;
+    var rSum = 0, gSum = 0, bSum = 0, count = 0;
+    for (var y = startY; y < startY + sampleH; y++) {
+      for (var x = startX; x < startX + sampleW; x++) {
+        var idx = (y * imgW + x) * 4;
+        rSum += data[idx];
+        gSum += data[idx + 1];
+        bSum += data[idx + 2];
+        count++;
+      }
+    }
+    if (count === 0) return [0, 0, 0];
+    return [Math.round(rSum / count), Math.round(gSum / count), Math.round(bSum / count)];
+  }
+
+  // Decode one frame from ImageData → { header, data, rawRGBs }
+  // bounds: optional { offsetX, offsetY, cellW, cellH } from detectGridBounds
+  function decodeFrame(imgData, palette, bounds) {
+    var w = imgData.width;
+    var h2 = imgData.height;
+    var offX = 0, offY = 0, cellW, cellH;
+    if (bounds) {
+      offX = bounds.offsetX; offY = bounds.offsetY;
+      cellW = bounds.cellW; cellH = bounds.cellH;
+    } else {
+      cellW = Math.floor(w / GRID_COLS);
+      cellH = Math.floor(h2 / GRID_ROWS);
+    }
+    if (cellW < 2 || cellH < 2) return null;
+
+    var totalCells = GRID_COLS * GRID_ROWS;
+    var colorIndices = new Uint8Array(totalCells);
+    var rawRGBs = [];
+
+    for (var k = 0; k < totalCells; k++) {
+      var col = k % GRID_COLS;
+      var row = Math.floor(k / GRID_COLS);
+      var cx = offX + col * cellW;
+      var cy = offY + row * cellH;
+      var rgb = sampleCell(imgData, Math.round(cx), Math.round(cy), Math.round(cellW), Math.round(cellH));
+      rawRGBs.push(rgb);
+      colorIndices[k] = nearestColor(rgb[0], rgb[1], rgb[2], palette);
+    }
+
+    // Convert color indices to bytes (MSB-first: 4 cells → 1 byte)
+    var totalBytes = Math.floor(totalCells / 4);
+    var allBytes = new Uint8Array(totalBytes);
+    for (var i = 0; i < totalBytes; i++) {
+      var b = 0;
+      for (var j = 0; j < 4; j++) {
+        b = (b << 2) | colorIndices[i * 4 + j];
+      }
+      allBytes[i] = b;
+    }
+
+    // Parse header (first 8 bytes)
+    var header = {
+      magic0: allBytes[0],
+      magic1: allBytes[1],
+      frameNum: (allBytes[2] << 8) | allBytes[3],
+      totalFrames: (allBytes[4] << 8) | allBytes[5],
+      fileHash: (allBytes[6] << 8) | allBytes[7],
+    };
+
+    // Data bytes (after header)
+    var dataBytes = allBytes.slice(8, 8 + BYTES_PER_FRAME);
+
+    return { header: header, data: dataBytes, rawRGBs: rawRGBs };
+  }
+
+  // Check if header has valid magic bytes
+  function isValidHeader(header) {
+    return header.magic0 === MAGIC_0 && header.magic1 === MAGIC_1 &&
+           header.totalFrames > 0 && header.totalFrames <= 65535 &&
+           header.frameNum >= 0 && header.frameNum < header.totalFrames;
+  }
+
+  // K-means clustering (K=4) for calibration
+  function kmeansCalibrate(rgbSamples, maxIter) {
+    maxIter = maxIter || 20;
+    if (rgbSamples.length < 16) return null;
+
+    // Initialize centroids using k-means++ style
+    var centroids = [];
+    // Start with the darkest point
+    var sorted = rgbSamples.slice().sort(function(a, b) {
+      return (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]);
+    });
+    centroids.push(sorted[0].slice());
+    centroids.push(sorted[Math.floor(sorted.length * 0.33)].slice());
+    centroids.push(sorted[Math.floor(sorted.length * 0.66)].slice());
+    centroids.push(sorted[sorted.length - 1].slice());
+
+    for (var iter = 0; iter < maxIter; iter++) {
+      // Assign each sample to nearest centroid
+      var clusters = [[], [], [], []];
+      for (var i = 0; i < rgbSamples.length; i++) {
+        var s = rgbSamples[i];
+        var bestC = 0;
+        var bestD = Infinity;
+        for (var c = 0; c < 4; c++) {
+          var d = (s[0] - centroids[c][0]) * (s[0] - centroids[c][0]) +
+                  (s[1] - centroids[c][1]) * (s[1] - centroids[c][1]) +
+                  (s[2] - centroids[c][2]) * (s[2] - centroids[c][2]);
+          if (d < bestD) { bestD = d; bestC = c; }
+        }
+        clusters[bestC].push(s);
+      }
+
+      // Update centroids
+      var converged = true;
+      for (var c = 0; c < 4; c++) {
+        if (clusters[c].length === 0) continue;
+        var nr = 0, ng = 0, nb = 0;
+        for (var j = 0; j < clusters[c].length; j++) {
+          nr += clusters[c][j][0];
+          ng += clusters[c][j][1];
+          nb += clusters[c][j][2];
+        }
+        var newR = Math.round(nr / clusters[c].length);
+        var newG = Math.round(ng / clusters[c].length);
+        var newB = Math.round(nb / clusters[c].length);
+        if (newR !== centroids[c][0] || newG !== centroids[c][1] || newB !== centroids[c][2]) {
+          converged = false;
+        }
+        centroids[c] = [newR, newG, newB];
+      }
+      if (converged) break;
+    }
+
+    // Sort centroids by luminance to map to 00(black), 01(blue), 10(red), 11(white)
+    // Luminance: Y = 0.299R + 0.587G + 0.114B
+    centroids.sort(function(a, b) {
+      var ya = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
+      var yb = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
+      return ya - yb;
+    });
+
+    // Validate: minimum distance between clusters
+    var minClusterDist = Infinity;
+    for (var i = 0; i < 4; i++) {
+      for (var j = i + 1; j < 4; j++) {
+        var d = (centroids[i][0] - centroids[j][0]) * (centroids[i][0] - centroids[j][0]) +
+                (centroids[i][1] - centroids[j][1]) * (centroids[i][1] - centroids[j][1]) +
+                (centroids[i][2] - centroids[j][2]) * (centroids[i][2] - centroids[j][2]);
+        if (d < minClusterDist) minClusterDist = d;
+      }
+    }
+
+    // If clusters too close (distance < 30^2 = 900), calibration failed
+    if (minClusterDist < 900) return null;
+
+    return centroids;
+  }
+
+  // Reconstruct file from collected frames
+  function reconstructFile(framesMap, totalFrames) {
+    var totalData = [];
+    for (var i = 0; i < totalFrames; i++) {
+      var frameData = framesMap[i];
+      if (!frameData) return null; // missing frame
+      for (var j = 0; j < frameData.length; j++) {
+        totalData.push(frameData[j]);
+      }
+    }
+    return new Uint8Array(totalData);
+  }
+
+
+  return {
+    DEFAULT_PALETTE: DEFAULT_PALETTE,
+    GRID_COLS: GRID_COLS,
+    GRID_ROWS: GRID_ROWS,
+    HEADER_CELLS: HEADER_CELLS,
+    DATA_CELLS: DATA_CELLS,
+    BYTES_PER_FRAME: BYTES_PER_FRAME,
+    MAGIC_0: MAGIC_0,
+    MAGIC_1: MAGIC_1,
+    nearestColor: nearestColor,
+    sampleCell: sampleCell,
+    decodeFrame: decodeFrame,
+    detectGridBounds: detectGridBounds,
+    isValidHeader: isValidHeader,
+    kmeansCalibrate: kmeansCalibrate,
+    reconstructFile: reconstructFile,
+  };
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   OCR Engine
+   ═══════════════════════════════════════════════════════════════ */
+
+var OcrEngine = (function() {
+  var tesseractLoaded = false;
+  var tesseractWorker = null;
+
+  function loadTesseract() {
+    return new Promise(function(resolve, reject) {
+      if (window.Tesseract) { resolve(); return; }
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      s.onload = function() { resolve(); };
+      s.onerror = function() { reject(new Error('Tesseract.js load failed')); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function chunkCanvas(canvas, maxH) {
+    var w = canvas.width; var h2 = canvas.height;
+    if (h2 <= maxH) return [canvas];
+    var chunks = []; var y = 0;
+    while (y < h2) {
+      var ch = Math.min(maxH, h2 - y);
+      var c = document.createElement('canvas'); c.width = w; c.height = ch;
+      c.getContext('2d').drawImage(canvas, 0, y, w, ch, 0, 0, w, ch);
+      chunks.push(c); y += ch;
+    }
+    return chunks;
+  }
+
+  function ocrTesseract(canvas) {
+    return loadTesseract().then(function() {
+      return Tesseract.createWorker('eng+kor');
+    }).then(function(worker) {
+      tesseractWorker = worker;
+      return worker.recognize(canvas);
+    }).then(function(result) {
+      if (tesseractWorker) { tesseractWorker.terminate(); tesseractWorker = null; }
+      return result.data.text;
+    });
+  }
+
+  function ocrCloudVision(canvas, settings) {
+    var b64 = canvas.toDataURL('image/png').split(',')[1];
+    var hdr = { 'Content-Type': 'application/json' };
+    var url = 'https://vision.googleapis.com/v1/images:annotate';
+    if (settings.cvAuthType === 'apiKey') url += '?key=' + encodeURIComponent(settings.cvApiKey);
+    else hdr['Authorization'] = 'Bearer ' + settings.cvOauthToken;
+    return fetch(url, { method: 'POST', headers: hdr, body: JSON.stringify({ requests: [{ image: { content: b64 }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] }) })
+      .then(function(r) { if (!r.ok) throw new Error('Cloud Vision HTTP ' + r.status); return r.json(); })
+      .then(function(d) { return (d.responses && d.responses[0] && d.responses[0].fullTextAnnotation) ? d.responses[0].fullTextAnnotation.text : ''; });
+  }
+
+  function ocrLlmVision(canvas, settings, forceProvider) {
+    var b64url = canvas.toDataURL('image/png');
+    var method = forceProvider || (settings.oaiApiKey ? 'openai' : settings.antApiKey ? 'anthropic' : settings.gemApiKey ? 'gemini' : null);
+    if (!method) return Promise.reject(new Error('No LLM API key configured'));
+    var prompt = 'Extract all text from this image exactly as shown. Preserve line breaks and formatting. Return only the extracted text.';
+    if (method === 'openai') {
+      return fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + settings.oaiApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: settings.oaiModel, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: b64url } }] }], max_tokens: 16000 }) })
+        .then(function(r) { if (!r.ok) throw new Error('OpenAI HTTP ' + r.status); return r.json(); })
+        .then(function(d) { return d.choices[0].message.content; });
+    } else if (method === 'anthropic') {
+      var b64 = b64url.split(',')[1];
+      return fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': settings.antApiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: settings.antModel, max_tokens: 16000, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } }] }] }) })
+        .then(function(r) { if (!r.ok) throw new Error('Anthropic HTTP ' + r.status); return r.json(); })
+        .then(function(d) { return d.content[0].text; });
+    } else {
+      var b64g = b64url.split(',')[1];
+      return fetch('https://generativelanguage.googleapis.com/v1/models/' + settings.gemModel + ':generateContent?key=' + encodeURIComponent(settings.gemApiKey), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: b64g } }] }] }) })
+        .then(function(r) { if (!r.ok) throw new Error('Gemini HTTP ' + r.status); return r.json(); })
+        .then(function(d) { return d.candidates[0].content.parts[0].text; });
+    }
+  }
+
+  function performOcr(canvas, method, settings, onProgress) {
+    // Map new granular method names to engine dispatch
+    var llmProvider = null;
+    var engine = method;
+    if (method === 'llm-openai') { engine = 'llm-vision'; llmProvider = 'openai'; }
+    else if (method === 'llm-anthropic') { engine = 'llm-vision'; llmProvider = 'anthropic'; }
+    else if (method === 'llm-gemini') { engine = 'llm-vision'; llmProvider = 'gemini'; }
+    else if (method === 'llm-vision') { engine = 'llm-vision'; llmProvider = null; }
+    var maxH = engine === 'cloud-vision' ? 1500 : 1800;
+    var chunks = chunkCanvas(canvas, maxH);
+    var total = chunks.length;
+    var texts = [];
+    var idx = 0;
+    function next() {
+      if (idx >= total) return Promise.resolve(texts.join('\n'));
+      onProgress(idx, total);
+      var chunk = chunks[idx]; idx++;
+      var p;
+      if (engine === 'tesseract') p = ocrTesseract(chunk);
+      else if (engine === 'cloud-vision') p = ocrCloudVision(chunk, settings);
+      else p = ocrLlmVision(chunk, settings, llmProvider);
+      return p.then(function(text) { texts.push(text); return next(); });
+    }
+    return next();
+  }
+
+  return { loadTesseract: loadTesseract, chunkCanvas: chunkCanvas, performOcr: performOcr };
+})();
+
+
+var INIT_STATE = {
+  mode: MODES.SC,
+  device: {
+    connected: false, name: null, resolution: null, fps: null,
+    devices: [],
+    selectedDeviceId: null,
+    needsPermission: false, permissionDenied: false,
+  },
+  scrollCapture: { phase: 'IDLE', direction: 'vertical', elapsedSec: 0, frameCount: 0, matchQuality: 0, consecutiveFails: 0, memoryMB: 0, assembleProgress: 0, chainLength: 0, excludedFrames: 0, resultCanvas: null, resultWidth: 0, resultHeight: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrMethod: 'tesseract', ocrTarget: 'auto', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '', cropRect: null },
+  fileReceive: { phase: 'SETUP', scriptVersion: 'full', totalFrames: 0, collectedCount: 0, framesMap: {}, loopCount: 0, elapsedSec: 0, validRate: 0, speedKBs: 0, calibrationStep: 0, palette: null, fileData: null, fileName: null, fileSizeKB: 0, consecutiveMagic: 0, totalProcessed: 0, totalValid: 0, lastFrameNum: -1, errorMsg: null },
+  blockText: { phase: 'SETUP', stabilityThreshold: 1.0, detectStatus: 'idle', stabilityPct: 0, roiRect: null, history: [], processingText: '', ocrMethod: 'tesseract', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, errorMsg: null, showLiveView: true },
+  settings: { cvAuthType: 'apiKey', cvApiKey: '', cvOauthToken: '', oaiApiKey: '', oaiModel: 'gpt-4o', antApiKey: '', antModel: 'claude-4', gemApiKey: '', gemModel: 'gemini-2.0', keyStorage: 'none', capDirection: 'vertical', capFrameRate: 30, capMaxFrames: 2000, capMemoryBudget: 1500, btStabilityThreshold: 85, btAutoClipboard: true, btNotifDuration: 3, btSensitivity: 'medium' },
+};
+
+function reducer(st, a) {
+  switch (a.type) {
+    case 'SET_MODE':    return Object.assign({}, st, { mode: a.v });
+    case 'SC_UPDATE':   return Object.assign({}, st, { scrollCapture: Object.assign({}, st.scrollCapture, a.v) });
+    case 'FR_UPDATE':   return Object.assign({}, st, { fileReceive: Object.assign({}, st.fileReceive, a.v) });
+    case 'TC_UPDATE':   // removed - merged into SC
+    case 'BT_UPDATE':   return Object.assign({}, st, { blockText: Object.assign({}, st.blockText, a.v) });
+    case 'DEVICE':      return Object.assign({}, st, { device: Object.assign({}, st.device, a.v) });
+
+    case 'SET_DEVICES': {
+      var devs = a.v;
+      var newDev = Object.assign({}, st.device, { devices: devs });
+      var newSC = st.scrollCapture;
+
+      if (!st.device.selectedDeviceId && devs.length > 0) {
+        newDev.selectedDeviceId = devs[0].deviceId;
+      } else if (st.device.selectedDeviceId && !devs.find(function(d) { return d.deviceId === st.device.selectedDeviceId; })) {
+        newDev.selectedDeviceId = null;
+        newDev.connected = false;
+        newDev.name = null;
+        newDev.resolution = null;
+        newDev.fps = null;
+        if (newSC.phase === 'READY') {
+          newSC = Object.assign({}, newSC, { phase: 'IDLE' });
+        }
+      }
+      return Object.assign({}, st, { device: newDev, scrollCapture: newSC });
+    }
+
+    case 'SELECT_DEVICE':
+      return Object.assign({}, st, { device: Object.assign({}, st.device, { selectedDeviceId: a.v }) });
+
+    case 'SET_UPDATE':   return Object.assign({}, st, { settings: Object.assign({}, st.settings, a.v) });
+    default: return st;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Helper Components
+   ═══════════════════════════════════════════════════════════════ */
+
+function SegCtrl(props) {
+  return h('div', { className: S.segContainer },
+    props.options.map(function(o) {
+      var cls = (props.value === o.value ? S.segActive : S.segInactive);
+      if (props.disabled) cls += ' ' + S.btnDisabled;
+      return h('button', {
+        key: o.value, className: cls, disabled: !!props.disabled,
+        onClick: function() { if (!props.disabled && props.onChange) props.onChange(o.value); },
+      }, o.label);
+    })
+  );
+}
+
+function SbSection(props) {
+  return h('div', null,
+    !props.first ? h('div', { className: S.sectionDivider }) : null,
+    props.title ? h('h3', { className: S.sectionTitle }, props.title) : null,
+    props.children
+  );
+}
+
+function OcrBadge(props) {
+  return h('div', { className: S.badge },
+    h('span', { className: 'text-zinc-500' }, 'OCR: '),
+    h('span', null, OCR_LABELS[props.method] || props.method)
+  );
+}
+
+// Build available OCR options based on configured API keys
+// Tesseract is always available as fallback; others only if API key exists
+function getOcrOptions(settings) {
+  var opts = [];
+  // Cloud Vision: needs cvApiKey or cvOauthToken
+  if (settings.cvApiKey || settings.cvOauthToken) {
+    opts.push({ value: 'cloud-vision', label: 'Google Cloud Vision' });
+  }
+  // LLM Vision providers: check each individually
+  if (settings.oaiApiKey) opts.push({ value: 'llm-openai', label: 'OpenAI ' + (settings.oaiModel || 'gpt-4o') });
+  if (settings.antApiKey) opts.push({ value: 'llm-anthropic', label: 'Anthropic ' + (settings.antModel || 'claude-4') });
+  if (settings.gemApiKey) opts.push({ value: 'llm-gemini', label: 'Gemini ' + (settings.gemModel || 'gemini-2.0') });
+  // Tesseract always last (fallback)
+  opts.push({ value: 'tesseract', label: 'Tesseract (로컬)' });
+  return opts;
+}
+
+function OcrDropdown(props) {
+  var opts = getOcrOptions(props.settings);
+  // If current value is no longer in the list, auto-fallback to tesseract
+  var current = props.value;
+  var found = opts.some(function(o) { return o.value === current; });
+  if (!found) {
+    // Also check if old 'llm-vision' maps to any available LLM provider
+    if (current === 'llm-vision') {
+      var llmOpt = opts.find(function(o) { return o.value.indexOf('llm-') === 0; });
+      if (llmOpt) { current = llmOpt.value; }
+      else { current = 'tesseract'; }
+    } else { current = 'tesseract'; }
+    if (current !== props.value && props.onChange) props.onChange(current);
+  }
+  return h('select', {
+    className: S.select,
+    value: current,
+    onChange: function(e) { if (props.onChange) props.onChange(e.target.value); },
+  }, opts.map(function(o) {
+    return h('option', { key: o.value, value: o.value }, o.label);
+  }));
+}
+
+function CopyButton(props) {
+  var _s = useState(false); var copied = _s[0]; var setCopied = _s[1];
+  return h('button', {
+    className: 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all ' + (copied ? 'bg-emerald-600/80 border border-emerald-500 text-emerald-100' : 'bg-zinc-700 border border-zinc-600 text-zinc-300 hover:bg-zinc-600 hover:border-zinc-500'),
+    onClick: function() {
+      navigator.clipboard.writeText(props.text).then(function() {
+        setCopied(true);
+        setTimeout(function() { setCopied(false); }, 1500);
+      });
+    },
+  }, copied ? 'Copied!' : 'Copy');
+}
+
+function Placeholder(props) {
+  return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-4 p-8' },
+    props.icon ? h(props.icon, { size: 64, className: 'text-zinc-600' }) : null,
+    h('h2', { className: 'text-lg font-medium text-zinc-300' }, props.title),
+    props.desc ? h('p', { className: 'text-sm text-zinc-500 max-w-md text-center leading-relaxed' }, props.desc) : null,
+    props.children || null
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Toast Notification System
+   ═══════════════════════════════════════════════════════════════ */
+
+var ICheck = mkIcon([
+  ['polyline', {points:'20 6 9 17 4 12'}],
+]);
+var IAlertTriangle = mkIcon([
+  ['path', {d:'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z'}],
+  ['line', {x1:'12',y1:'9',x2:'12',y2:'13'}],
+  ['line', {x1:'12',y1:'17',x2:'12.01',y2:'17'}],
+]);
+var IXCircle = mkIcon([
+  ['circle', {cx:'12',cy:'12',r:'10'}],
+  ['line', {x1:'15',y1:'9',x2:'9',y2:'15'}],
+  ['line', {x1:'9',y1:'9',x2:'15',y2:'15'}],
+]);
+var IInfo = mkIcon([
+  ['circle', {cx:'12',cy:'12',r:'10'}],
+  ['line', {x1:'12',y1:'16',x2:'12',y2:'12'}],
+  ['line', {x1:'12',y1:'8',x2:'12.01',y2:'8'}],
+]);
+
+var TOAST_STYLES = {
+  success: { border: 'border-emerald-500', icon: ICheck, iconCls: 'text-emerald-400' },
+  warning: { border: 'border-amber-500', icon: IAlertTriangle, iconCls: 'text-amber-400' },
+  error: { border: 'border-red-500', icon: IXCircle, iconCls: 'text-red-400' },
+  info: { border: 'border-sky-500', icon: IInfo, iconCls: 'text-sky-400' },
+};
+
+function ToastContainer(props) {
+  var toasts = props.toasts || [];
+  if (toasts.length === 0) return null;
+  return h('div', { className: 'fixed bottom-10 right-4 z-50 flex flex-col-reverse gap-2 max-w-sm', 'aria-live': 'polite' },
+    toasts.slice(0, 3).map(function(t) {
+      var style = TOAST_STYLES[t.type] || TOAST_STYLES.info;
+      return h('div', {
+        key: t.id,
+        className: 'bg-zinc-800 border-l-4 ' + style.border + ' p-3 rounded-r-lg shadow-lg flex items-start gap-3 animate-slide-in',
+        role: t.type === 'error' ? 'alert' : 'status',
+        'aria-live': t.type === 'error' ? 'assertive' : 'polite',
+      },
+        h(style.icon, { size: 18, className: style.iconCls + ' flex-shrink-0 mt-0.5' }),
+        h('div', { className: 'flex-1 min-w-0' },
+          t.title ? h('div', { className: 'text-sm font-medium text-zinc-200' }, t.title) : null,
+          h('div', { className: 'text-xs text-zinc-400' + (t.title ? ' mt-0.5' : '') }, t.message)
+        ),
+        h('button', {
+          className: 'text-zinc-500 hover:text-zinc-300 flex-shrink-0 ml-2',
+          onClick: function() { if (props.onDismiss) props.onDismiss(t.id); },
+          'aria-label': '\uB2EB\uAE30',
+        }, '\u2715')
+      );
+    })
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Video Preview + Device Select
+   ═══════════════════════════════════════════════════════════════ */
+
+function VideoPreview(props) {
+  var videoRef = useRef(null);
+  var stream = props.stream;
+
+  useEffect(function() {
+    var el = videoRef.current;
+    if (!el) return;
+    if (stream) {
+      el.srcObject = stream;
+    } else {
+      el.srcObject = null;
+    }
+  }, [stream]);
+
+  return h('div', { className: 'flex-1 flex flex-col bg-black relative min-h-0' },
+    h('video', {
+      ref: function(el) { videoRef.current = el; if (props.videoRef) props.videoRef.current = el; },
+      autoPlay: true,
+      playsInline: true,
+      muted: true,
+      className: 'flex-1 object-contain bg-black min-h-0',
+      'aria-label': '\uCEA1\uCC98\uCE74\uB4DC \uC2E4\uC2DC\uAC04 \uBBF8\uB9AC\uBCF4\uAE30',
+    }),
+    props.resolution ? h('div', { className: 'absolute bottom-2 left-3 text-xs font-mono text-zinc-500' },
+      props.resolution + (props.fps ? ' @ ' + props.fps + 'fps' : '')
+    ) : null
+  );
+}
+
+function DeviceSelect(props) {
+  var devices = props.devices || [];
+  var selected = props.selectedDeviceId;
+  var disabled = props.disabled;
+  var dispatch = props.dispatch;
+
+  if (devices.length === 0) {
+    return h('select', { className: S.select + ' ' + S.btnDisabled, disabled: true },
+      h('option', null, '연결된 장치 없음')
+    );
+  }
+
+  return h('select', {
+    className: S.select + (disabled ? ' ' + S.btnDisabled : ''),
+    disabled: disabled,
+    value: selected || '',
+    onChange: function(e) { dispatch({ type: 'SELECT_DEVICE', v: e.target.value }); },
+  },
+    devices.map(function(d) {
+      return h('option', { key: d.deviceId, value: d.deviceId }, d.label);
+    })
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Mode: Scroll Capture
+   ═══════════════════════════════════════════════════════════════ */
+
+function fmtTime(sec) {
+  var m = Math.floor(sec / 60);
+  var s = sec % 60;
+  return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function qualityLabel(q) {
+  if (q >= 0.90) return { text: '우수', color: 'emerald' };
+  if (q >= 0.85) return { text: '양호', color: 'sky' };
+  if (q >= 0.70) return { text: '주의', color: 'amber' };
+  return { text: '위험', color: 'red' };
+}
+
+function QualityGauge(props) {
+  var q = props.value || 0;
+  var info = qualityLabel(q);
+  var pct = Math.min(100, Math.round(q * 100));
+  var barColor = 'bg-' + info.color + '-400';
+  var textColor = 'text-' + info.color + '-400';
+  return h('div', null,
+    h('div', { className: 'flex items-center justify-between mb-1' },
+      h('span', { className: 'text-lg font-mono font-bold ' + textColor }, q.toFixed(2)),
+      h('span', { className: 'text-xs ' + textColor }, info.text)
+    ),
+    h('div', { className: 'bg-zinc-700 rounded-full h-2 w-full' },
+      h('div', { className: barColor + ' h-full rounded-full transition-all duration-300', style: { width: pct + '%' } })
+    )
+  );
+}
+
+function WarningBox(props) {
+  return h('div', { className: 'bg-amber-900/30 border border-amber-700/50 rounded-lg p-3 text-sm text-amber-300' },
+    h('span', { className: 'mr-1' }, '⚠'),
+    props.children
+  );
+}
+
+function cropCanvas(srcCanvas, rect, direction) {
+  // For scroll captures: crop only perpendicular to scroll direction
+  // Vertical scroll → apply X/W only, full height
+  // Horizontal scroll → apply Y/H only, full width
+  var isVert = direction !== 'horizontal';
+  var sx = isVert ? Math.round(srcCanvas.width * rect.x / 100) : 0;
+  var sy = isVert ? 0 : Math.round(srcCanvas.height * rect.y / 100);
+  var sw = isVert ? Math.max(1, Math.round(srcCanvas.width * rect.w / 100)) : srcCanvas.width;
+  var sh = isVert ? srcCanvas.height : Math.max(1, Math.round(srcCanvas.height * rect.h / 100));
+  var c = document.createElement('canvas');
+  c.width = sw; c.height = sh;
+  c.getContext('2d').drawImage(srcCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  return c;
+}
+
+function downloadCanvas(canvas, fmt, filename) {
+  var mime = fmt === 'jpeg' ? 'image/jpeg' : 'image/png';
+  var ext = fmt === 'jpeg' ? '.jpg' : '.png';
+  canvas.toBlob(function(blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename + ext;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+  }, mime, fmt === 'jpeg' ? 0.92 : undefined);
+}
+
+function ResultViewer(props) {
+  var canvas = props.canvas;
+  var containerRef = useRef(null);
+  var zoomState = useState(null); // null = fit
+  var zoom = zoomState[0];
+  var setZoom = zoomState[1];
+
+  var imgUrl = useState(null);
+  var url = imgUrl[0];
+  var setUrl = imgUrl[1];
+
+  useEffect(function() {
+    if (canvas) {
+      var u = canvas.toDataURL('image/png');
+      setUrl(u);
+      return function() {};
+    }
+  }, [canvas]);
+
+  var displayZoom = zoom || 'fit';
+
+  function doZoom(delta) {
+    setZoom(function(prev) {
+      var cur = prev || 50;
+      var next = Math.max(10, Math.min(400, cur + delta));
+      return next;
+    });
+  }
+
+  var toolbarCls = 'bg-zinc-800/90 backdrop-blur border-b border-zinc-700 h-9 px-3 flex items-center gap-2';
+
+  return h('div', { className: 'flex-1 flex flex-col min-h-0' },
+    // Toolbar
+    h('div', { className: toolbarCls },
+      h('button', { className: S.btnGhost + ' px-2 py-1', onClick: function() { doZoom(-10); } }, '-'),
+      h('span', { className: 'text-xs font-mono text-zinc-300 w-12 text-center' }, zoom ? zoom + '%' : '맞춤'),
+      h('button', { className: S.btnGhost + ' px-2 py-1', onClick: function() { doZoom(10); } }, '+'),
+      h('span', { className: 'w-px h-4 bg-zinc-600' }),
+      h('button', { className: S.btnGhost + ' px-2 py-1' + (!zoom ? ' bg-zinc-700' : ''), onClick: function() { setZoom(null); } }, '맞춤'),
+      h('button', { className: S.btnGhost + ' px-2 py-1' + (zoom === 100 ? ' bg-zinc-700' : ''), onClick: function() { setZoom(100); } }, '원본')
+    ),
+    // Image viewer
+    h('div', { ref: containerRef, className: 'flex-1 overflow-auto bg-black p-2 min-h-0' },
+      url ? h('img', {
+        src: url,
+        className: 'mx-auto',
+        style: zoom ? { width: (props.width * zoom / 100) + 'px' } : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' },
+        draggable: false,
+      }) : null
+    )
+  );
+}
+
+function CropRectOverlay(props) {
+  var rect = props.rect;
+  if (!rect) return null;
+  var dragRef = useRef({ type: null, sx: 0, sy: 0, sr: null, cw: 0, ch: 0 });
+  var containerRef = useRef(null);
+
+  function pct(px, total) { return (px / total) * 100; }
+
+  function onDown(e, type) {
+    e.preventDefault(); e.stopPropagation();
+    var c = containerRef.current; if (!c) return;
+    var b = c.getBoundingClientRect();
+    dragRef.current = { type: type, sx: e.clientX, sy: e.clientY, sr: Object.assign({}, rect), cw: b.width, ch: b.height };
+    function onMove(ev) {
+      var d = dragRef.current; if (!d.type) return;
+      var dx = pct(ev.clientX - d.sx, d.cw);
+      var dy = pct(ev.clientY - d.sy, d.ch);
+      var r = Object.assign({}, d.sr);
+      if (d.type === 'move') {
+        r.x = Math.max(0, Math.min(100 - r.w, d.sr.x + dx));
+        r.y = Math.max(0, Math.min(100 - r.h, d.sr.y + dy));
+      } else {
+        if (d.type.indexOf('w') >= 0) { var nx = d.sr.x + dx, nw = d.sr.w - dx; if (nw >= 5 && nx >= 0) { r.x = nx; r.w = nw; } }
+        if (d.type.indexOf('e') >= 0) { var nw2 = d.sr.w + dx; if (nw2 >= 5 && d.sr.x + nw2 <= 100) r.w = nw2; }
+        if (d.type.indexOf('n') >= 0) { var ny = d.sr.y + dy, nh = d.sr.h - dy; if (nh >= 5 && ny >= 0) { r.y = ny; r.h = nh; } }
+        if (d.type.indexOf('s') >= 0) { var nh2 = d.sr.h + dy; if (nh2 >= 5 && d.sr.y + nh2 <= 100) r.h = nh2; }
+      }
+      if (props.onChange) props.onChange(r);
+    }
+    function onUp() {
+      dragRef.current.type = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
+  var hs = 10; // handle size px
+  var ho = -5; // handle offset
+  var hCls = 'absolute bg-blue-400 rounded-full z-20';
+  var hBase = { width: hs + 'px', height: hs + 'px' };
+  function hStyle(pos) { return Object.assign({}, hBase, pos); }
+
+  return h('div', { ref: containerRef, className: 'absolute inset-0 z-10' },
+    h('div', {
+      className: 'absolute border-2 border-dashed border-blue-400 bg-blue-400/10',
+      style: { left: rect.x + '%', top: rect.y + '%', width: rect.w + '%', height: rect.h + '%', cursor: 'move' },
+      onMouseDown: function(e) { onDown(e, 'move'); },
+    },
+      h('div', { className: 'absolute -top-5 left-0 text-[10px] font-mono text-blue-400 bg-zinc-900/80 px-1 rounded pointer-events-none select-none' }, 'OCR \uC601\uC5ED'),
+      h('div', { className: hCls, style: hStyle({ top: ho + 'px', left: ho + 'px', cursor: 'nw-resize' }), onMouseDown: function(e) { onDown(e, 'nw'); } }),
+      h('div', { className: hCls, style: hStyle({ top: ho + 'px', right: ho + 'px', cursor: 'ne-resize' }), onMouseDown: function(e) { onDown(e, 'ne'); } }),
+      h('div', { className: hCls, style: hStyle({ bottom: ho + 'px', left: ho + 'px', cursor: 'sw-resize' }), onMouseDown: function(e) { onDown(e, 'sw'); } }),
+      h('div', { className: hCls, style: hStyle({ bottom: ho + 'px', right: ho + 'px', cursor: 'se-resize' }), onMouseDown: function(e) { onDown(e, 'se'); } }),
+      h('div', { className: hCls, style: hStyle({ top: ho + 'px', left: '50%', marginLeft: ho + 'px', cursor: 'n-resize' }), onMouseDown: function(e) { onDown(e, 'n'); } }),
+      h('div', { className: hCls, style: hStyle({ bottom: ho + 'px', left: '50%', marginLeft: ho + 'px', cursor: 's-resize' }), onMouseDown: function(e) { onDown(e, 's'); } }),
+      h('div', { className: hCls, style: hStyle({ top: '50%', left: ho + 'px', marginTop: ho + 'px', cursor: 'w-resize' }), onMouseDown: function(e) { onDown(e, 'w'); } }),
+      h('div', { className: hCls, style: hStyle({ top: '50%', right: ho + 'px', marginTop: ho + 'px', cursor: 'e-resize' }), onMouseDown: function(e) { onDown(e, 'e'); } })
+    )
+  );
+}
+
+function ScrollCaptureMain(props) {
+  var st = props.state;
+  if (st.phase === 'IDLE') {
+    // Permission needed (macOS/privacy browsers)
+    if (props.needsPermission) {
+      return h(Placeholder, {
+        icon: IMonitor,
+        title: '\uCE74\uBA54\uB77C \uC811\uADFC \uAD8C\uD55C\uC774 \uD544\uC694\uD569\uB2C8\uB2E4',
+        desc: 'HDMI \uCEA1\uCC98\uCE74\uB4DC\uAC00 \uAC10\uC9C0\uB418\uC5C8\uC9C0\uB9CC, \uBE0C\uB77C\uC6B0\uC800 \uCE74\uBA54\uB77C \uAD8C\uD55C\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.\nmacOS\uC5D0\uC11C\uB294 \uCE74\uBA54\uB77C \uC811\uADFC\uC744 \uD5C8\uC6A9\uD574\uC57C \uCEA1\uCC98\uCE74\uB4DC\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.',
+      },
+        h('button', {
+          className: S.btnPrimary + ' mt-4 max-w-xs',
+          onClick: function() { if (props.onRequestPermission) props.onRequestPermission(); },
+        }, '\uCE74\uBA54\uB77C \uC811\uADFC \uD5C8\uC6A9')
+      );
+    }
+    if (props.permissionDenied) {
+      return h(Placeholder, {
+        icon: IMonitor,
+        title: '\uCE74\uBA54\uB77C \uAD8C\uD55C\uC774 \uAC70\uBD80\uB418\uC5C8\uC2B5\uB2C8\uB2E4',
+        desc: '\uBE0C\uB77C\uC6B0\uC800 \uC124\uC815\uC5D0\uC11C \uCE74\uBA54\uB77C \uAD8C\uD55C\uC744 \uD5C8\uC6A9\uD55C \uD6C4 \uD398\uC774\uC9C0\uB97C \uC0C8\uB85C\uACE0\uCE68\uD574 \uC8FC\uC138\uC694.\nmacOS: \uC2DC\uC2A4\uD15C \uC124\uC815 \u2192 \uAC1C\uC778\uC815\uBCF4 \uBCF4\uD638 \uBC0F \uBCF4\uC548 \u2192 \uCE74\uBA54\uB77C \u2192 Chrome \uD5C8\uC6A9',
+      },
+        h('button', {
+          className: S.btnSecondary + ' mt-4 max-w-xs',
+          onClick: function() { window.location.reload(); },
+        }, '\uD398\uC774\uC9C0 \uC0C8\uB85C\uACE0\uCE68')
+      );
+    }
+    return h(Placeholder, {
+      icon: IMonitor,
+      title: '\uCEA1\uCC98\uCE74\uB4DC\uB97C \uC5F0\uACB0\uD574 \uC8FC\uC138\uC694',
+      desc: 'USB HDMI \uCEA1\uCC98\uCE74\uB4DC\uB97C \uD0C0\uAC9F PC\uC758 USB 3.0 \uD3EC\uD2B8\uC5D0 \uC5F0\uACB0\uD55C \uD6C4, \uC18C\uC2A4 PC\uC758 HDMI \uCD9C\uB825\uACFC \uCEA1\uCC98\uCE74\uB4DC\uB97C HDMI \uCF00\uC774\uBE14\uB85C \uC5F0\uACB0\uD558\uC138\uC694.',
+    },
+      h('div', { className: 'flex items-center gap-2 text-zinc-500 text-xs mt-2' },
+        h(ILoader, { size: 14, className: 'animate-spin-slow' }),
+        '\uC7A5\uCE58\uB97C \uAC10\uC9C0\uD558\uB294 \uC911...'
+      )
+    );
+  }
+  if (st.phase === 'READY') {
+    return h('div', { className: 'flex-1 flex flex-col min-h-0 relative' },
+      h(VideoPreview, { stream: props.stream, resolution: props.resolution, fps: props.fps }),
+      // Crop rectangle overlay (manual OCR target)
+      st.ocrTarget === 'manual' && st.cropRect ? h(CropRectOverlay, {
+        rect: st.cropRect,
+        onChange: function(r) { props.dispatch({ type: 'SC_UPDATE', v: { cropRect: r } }); }
+      }) : null,
+    );
+  }
+  if (st.phase === 'CAPTURING') {
+    var hasCrop = st.ocrTarget === 'manual' && st.cropRect;
+    return h('div', { className: 'flex-1 flex flex-col bg-black relative min-h-0' },
+      h('div', { className: 'absolute top-3 left-3 z-20 flex items-center gap-2' },
+        h('span', { className: 'w-3 h-3 rounded-full bg-red-500 animate-pulse-dot' }),
+        h('span', { className: 'text-red-500 text-sm font-bold' }, 'REC'),
+        h('span', { className: 'text-sm font-mono text-zinc-300 ml-2' }, fmtTime(st.elapsedSec))
+      ),
+      h('video', {
+        ref: props.videoRef,
+        autoPlay: true, playsInline: true, muted: true,
+        className: 'flex-1 object-contain bg-black min-h-0',
+      }),
+      // Crop area indicator during capture (read-only, no drag handles)
+      hasCrop ? h('div', { className: 'absolute inset-0 pointer-events-none z-10' },
+        // Dimmed overlay outside crop area
+        h('div', { className: 'absolute inset-0 bg-black/40' }),
+        // Clear window for crop area with red border
+        h('div', {
+          className: 'absolute border-2 border-red-500 shadow-[0_0_0_1px_rgba(239,68,68,0.3)]',
+          style: {
+            left: st.cropRect.x + '%', top: st.cropRect.y + '%',
+            width: st.cropRect.w + '%', height: st.cropRect.h + '%',
+            boxShadow: '0 0 0 9999px rgba(0,0,0,0.4)',
+          }
+        },
+          h('div', { className: 'absolute -top-5 left-0 text-[10px] font-mono text-red-400 bg-zinc-900/80 px-1 rounded select-none' }, 'REC \uC601\uC5ED')
+        )
+      ) : h('div', { className: 'absolute inset-0 border-2 border-red-500 pointer-events-none' }),
+      props.resolution ? h('div', { className: 'absolute bottom-2 left-3 text-xs font-mono text-zinc-500 z-20' },
+        props.resolution + (props.fps ? ' @ ' + props.fps + 'fps' : '')
+      ) : null
+    );
+  }
+  if (st.phase === 'ASSEMBLING') {
+    var pct = st.assembleProgress || 0;
+    return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-6 p-8' },
+      h('h2', { className: 'text-xl font-medium text-zinc-200' }, '\uC774\uBBF8\uC9C0 \uC870\uB9BD \uC911...'),
+      h('div', { className: 'w-3/5 max-w-lg' },
+        h('div', { className: 'bg-zinc-700 rounded-full h-3 w-full overflow-hidden' },
+          h('div', { className: 'bg-blue-500 h-full rounded-full transition-all duration-300', style: { width: pct + '%' } })
+        ),
+        h('div', { className: 'flex items-center justify-between mt-2' },
+          h('span', { className: 'text-sm text-zinc-400' }, '\uCC98\uB9AC: ' + st.chainLength + ' / ' + st.frameCount + ' \uD504\uB808\uC784'),
+          h('span', { className: 'text-lg font-mono font-bold text-zinc-200' }, pct + '%')
+        )
+      ),
+      h('p', { className: 'text-sm text-zinc-400' }, '\uCCB4\uC778 \uAE38\uC774: ' + st.chainLength + ' \uD504\uB808\uC784')
+    );
+  }
+  if (st.phase === 'RESULT') {
+    return h(ResultViewer, { canvas: st.resultCanvas, width: st.resultWidth, height: st.resultHeight });
+  }
+  if (st.phase === 'OCR_PROCESSING') {
+    return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-4 p-8' },
+      h(ILoader, { size: 48, className: 'text-emerald-400 animate-spin-slow' }),
+      h('h2', { className: 'text-lg font-medium text-zinc-300' }, 'OCR \uCC98\uB9AC \uC911...'),
+      h(OcrBadge, { method: st.ocrMethod }),
+      h('div', { className: 'w-64 bg-zinc-700 rounded-full h-2 mt-2' },
+        h('div', { className: 'bg-emerald-500 h-full rounded-full transition-all duration-300', style: { width: (st.ocrProgress || 0) + '%' } })
+      ),
+      h('p', { className: 'text-sm text-zinc-500' },
+        st.ocrChunks > 0 ? '\uCCAD\uD06C ' + st.ocrCurrentChunk + '/' + st.ocrChunks + ' (' + (st.ocrProgress || 0) + '%)' : 'OCR \uC900\uBE44 \uC911...')
+    );
+  }
+  if (st.phase === 'OCR_RESULT') {
+    var imgUrl = st.resultCanvas ? st.resultCanvas.toDataURL('image/png') : null;
+    return h('div', { className: 'flex-1 flex min-h-0' },
+      h('div', { className: 'flex-1 overflow-auto p-4 border-r border-zinc-700 min-w-0' },
+        imgUrl ? h('img', { src: imgUrl, className: 'max-w-full h-auto', alt: 'Stitched' }) : null
+      ),
+      h('div', { className: 'flex-1 flex flex-col min-w-0 min-h-0' },
+        h('div', { className: 'flex items-center justify-between px-4 py-2 border-b border-zinc-700' },
+          h('span', { className: 'text-sm font-medium text-zinc-300' }, 'OCR \uACB0\uACFC'),
+          h('div', { className: 'flex gap-2' },
+            h('button', { className: 'text-xs text-blue-400 hover:text-blue-300', onClick: function() { if (props.onCopyText) props.onCopyText(); } }, '\uBCF5\uC0AC'),
+            h('button', { className: 'text-xs text-blue-400 hover:text-blue-300', onClick: function() { if (props.onDownloadText) props.onDownloadText(); } }, '\uB2E4\uC6B4\uB85C\uB4DC')
+          )
+        ),
+        h('textarea', {
+          className: 'flex-1 bg-zinc-900 text-zinc-200 p-4 text-sm font-mono resize-none outline-none min-h-0',
+          value: st.ocrText || '',
+          onChange: function(e) { props.dispatch({ type: 'SC_UPDATE', v: { ocrText: e.target.value } }); },
+          spellCheck: false,
+        })
+      )
+    );
+  }
+  return h(Placeholder, { icon: ICamera, title: '\uC2A4\uD06C\uB864 \uCEA1\uCC98', desc: '\uC0C1\uD0DC: ' + st.phase });
+}
+
+function ScrollCaptureSidebar(props) {
+  var st = props.state;
+  var d = props.dispatch;
+  var phase = st.phase;
+
+  // IDLE / READY sidebar
+  if (phase === 'IDLE' || phase === 'READY') {
+    var dis = phase === 'IDLE';
+    return h('div', null,
+      h(SbSection, { title: '\uC7A5\uCE58', first: true },
+        h(DeviceSelect, { devices: props.devices, selectedDeviceId: props.selectedDeviceId, disabled: false, dispatch: d })
+      ),
+      h(SbSection, { title: '\uC2A4\uD06C\uB864 \uBC29\uD5A5' },
+        h(SegCtrl, {
+          options: [{ value: 'vertical', label: '\uC138\uB85C' }, { value: 'horizontal', label: '\uAC00\uB85C' }],
+          value: st.direction, disabled: dis,
+          onChange: function(v) { d({ type: 'SC_UPDATE', v: { direction: v } }); },
+        })
+      ),
+      h(SbSection, { title: 'OCR \uD0C0\uAC9F \uC601\uC5ED' },
+        h(SegCtrl, {
+          options: [{ value: 'auto', label: '\uC804\uCCB4' }, { value: 'manual', label: '\uC218\uB3D9' }],
+          value: st.ocrTarget,
+          onChange: function(v) {
+            d({ type: 'SC_UPDATE', v: { ocrTarget: v } });
+            if (v === 'manual' && !st.cropRect) d({ type: 'SC_UPDATE', v: { cropRect: { x: 10, y: 10, w: 80, h: 80 } } });
+          },
+        }),
+        st.ocrTarget === 'manual' ? h('div', { className: 'mt-2 space-y-2' },
+          h('div', { className: 'grid grid-cols-2 gap-2' },
+            h('div', null,
+              h('label', { className: 'text-[10px] text-zinc-500' }, 'X (%)'),
+              h('input', { type: 'number', min: '0', max: '90', step: '1', value: String((st.cropRect || {}).x || 10), className: 'w-full bg-zinc-700 border border-zinc-600 text-zinc-100 rounded px-2 py-1 text-xs font-mono', onChange: function(e) { var r = Object.assign({}, st.cropRect || { x: 10, y: 10, w: 80, h: 80 }); r.x = Number(e.target.value); d({ type: 'SC_UPDATE', v: { cropRect: r } }); } })
+            ),
+            h('div', null,
+              h('label', { className: 'text-[10px] text-zinc-500' }, 'Y (%)'),
+              h('input', { type: 'number', min: '0', max: '90', step: '1', value: String((st.cropRect || {}).y || 10), className: 'w-full bg-zinc-700 border border-zinc-600 text-zinc-100 rounded px-2 py-1 text-xs font-mono', onChange: function(e) { var r = Object.assign({}, st.cropRect || { x: 10, y: 10, w: 80, h: 80 }); r.y = Number(e.target.value); d({ type: 'SC_UPDATE', v: { cropRect: r } }); } })
+            ),
+            h('div', null,
+              h('label', { className: 'text-[10px] text-zinc-500' }, 'W (%)'),
+              h('input', { type: 'number', min: '10', max: '100', step: '1', value: String((st.cropRect || {}).w || 80), className: 'w-full bg-zinc-700 border border-zinc-600 text-zinc-100 rounded px-2 py-1 text-xs font-mono', onChange: function(e) { var r = Object.assign({}, st.cropRect || { x: 10, y: 10, w: 80, h: 80 }); r.w = Number(e.target.value); d({ type: 'SC_UPDATE', v: { cropRect: r } }); } })
+            ),
+            h('div', null,
+              h('label', { className: 'text-[10px] text-zinc-500' }, 'H (%)'),
+              h('input', { type: 'number', min: '10', max: '100', step: '1', value: String((st.cropRect || {}).h || 80), className: 'w-full bg-zinc-700 border border-zinc-600 text-zinc-100 rounded px-2 py-1 text-xs font-mono', onChange: function(e) { var r = Object.assign({}, st.cropRect || { x: 10, y: 10, w: 80, h: 80 }); r.h = Number(e.target.value); d({ type: 'SC_UPDATE', v: { cropRect: r } }); } })
+            )
+          ),
+          h('button', { className: 'text-xs text-blue-400 hover:text-blue-300', onClick: function() { d({ type: 'SC_UPDATE', v: { cropRect: { x: 10, y: 10, w: 80, h: 80 } } }); } }, '\uCD08\uAE30\uD654')
+        ) : null
+      ),
+      h(SbSection, { title: 'OCR 방법' },
+        h(OcrDropdown, { settings: props.settings, value: st.ocrMethod, onChange: function(v) { d({ type: 'SC_UPDATE', v: { ocrMethod: v } }); } })
+      ),
+      h(SbSection, { title: '사용 안내' },
+        h('div', { className: 'text-xs text-zinc-400 space-y-1' },
+          h('p', null, '① 소스 PC에서 텍스트 파일 열기'),
+          h('p', null, '② 문서 맨 위(Ctrl+Home)로 이동'),
+          h('p', null, '③ 캡처 시작 후 천천히 아래로 스크롤')
+        )
+      ),
+      h(SbSection, null,
+        h('button', {
+          className: S.btnPrimary + (dis ? ' ' + S.btnDisabled : '') + ' flex items-center justify-center gap-2',
+          disabled: dis,
+          onClick: function() { if (!dis && props.onStartCapture) props.onStartCapture(); },
+        },
+          h('span', { className: 'w-2.5 h-2.5 rounded-full bg-white inline-block' }),
+          '\uCEA1\uCC98 \uC2DC\uC791'
+        ),
+        !dis ? h('p', { className: 'text-xs text-zinc-500 text-center mt-2' }, 'Space \uD0A4\uB85C\uB3C4 \uC2DC\uC791\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.') : null
+      )
+    );
+  }
+
+  // CAPTURING sidebar
+  if (phase === 'CAPTURING') {
+    return h('div', null,
+      h(SbSection, { first: true },
+        h('div', { className: 'flex items-center gap-2 text-red-400 text-sm font-semibold uppercase tracking-wide' },
+          h('span', { className: 'w-2 h-2 rounded-full bg-red-400 animate-pulse-dot' }),
+          '\uCEA1\uCC98 \uC911'
+        )
+      ),
+      h(SbSection, { title: '\uACBD\uACFC \uC2DC\uAC04' }, h('div', { className: S.statValue }, fmtTime(st.elapsedSec))),
+      h(SbSection, { title: '\uCEA1\uCC98 \uD504\uB808\uC784' }, h('div', { className: S.statValue }, String(st.frameCount))),
+      h(SbSection, { title: '\uB9E4\uCE6D \uD488\uC9C8' }, h(QualityGauge, { value: st.matchQuality })),
+      st.consecutiveFails >= 5 ? h(SbSection, null, h(WarningBox, null, '\uB9E4\uCE6D \uC2E4\uD328\uAC00 \uC5F0\uC18D ' + st.consecutiveFails + '\uD68C \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4.')) : null,
+      st.frameCount >= 1800 ? h(SbSection, null, h(WarningBox, null, '\uD504\uB808\uC784 \uC0C1\uD55C(2,000)\uC5D0 \uADFC\uC811\uD569\uB2C8\uB2E4.')) : null,
+      st.memoryMB >= 500 ? h(SbSection, null, h(WarningBox, null, st.memoryMB >= 1000 ? '\uBA54\uBAA8\uB9AC \uD55C\uACC4 \uADFC\uC811' : '\uCEA1\uCC98 \uC6A9\uB7C9\uC774 \uD07D\uB2C8\uB2E4')) : null,
+      h(SbSection, null,
+        h('button', { className: S.btnDanger + ' flex items-center justify-center gap-2', onClick: function() { if (props.onStopCapture) props.onStopCapture(); } },
+          h('span', { className: 'w-2.5 h-2.5 rounded bg-white inline-block' }), '\uCEA1\uCC98 \uC885\uB8CC'),
+        h('p', { className: 'text-xs text-zinc-500 text-center mt-2' }, 'Esc \uD0A4\uB85C\uB3C4 \uC885\uB8CC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.')
+      )
+    );
+  }
+
+  // ASSEMBLING sidebar
+  if (phase === 'ASSEMBLING') {
+    return h('div', null,
+      h(SbSection, { first: true }, h('div', { className: 'text-sm font-semibold text-zinc-300 uppercase tracking-wide' }, '\uC870\uB9BD \uC911')),
+      h(SbSection, { title: '\uCEA1\uCC98 \uC815\uBCF4' },
+        h('div', { className: 'text-sm text-zinc-400 space-y-1' },
+          h('p', null, '\uCD1D \uD504\uB808\uC784: ' + st.frameCount),
+          h('p', null, '\uCEA1\uCC98 \uC2DC\uAC04: ' + fmtTime(st.elapsedSec)),
+          h('p', null, '\uC2A4\uD06C\uB864 \uBC29\uD5A5: ' + (st.direction === 'vertical' ? '\uC138\uB85C' : '\uAC00\uB85C'))
+        )
+      ),
+      h(SbSection, null, h('button', { className: S.btnSecondary, onClick: function() { if (props.onCancelAssemble) props.onCancelAssemble(); } }, '\uCDE8\uC18C'))
+    );
+  }
+
+  // RESULT sidebar — image download + OCR execute
+  if (phase === 'RESULT') {
+    var w = st.resultWidth; var ht = st.resultHeight;
+    return h('div', null,
+      h(SbSection, { title: '\uACB0\uACFC', first: true },
+        h('div', { className: 'text-sm text-zinc-400 space-y-1' },
+          h('p', null, '\uD06C\uAE30: ' + w + ' \u00D7 ' + ht + ' px'),
+          h('p', null, '\uC0AC\uC6A9 \uD504\uB808\uC784: ' + st.chainLength + ' / ' + st.frameCount)
+        )
+      ),
+      st.excludedFrames > 0 ? h(SbSection, null, h(WarningBox, null, '\uB9E4\uCE6D \uC2E4\uD328\uB85C \uB204\uB77D \uAD6C\uAC04\uC774 \uC788\uC2B5\uB2C8\uB2E4.')) : null,
+      h(SbSection, { title: '\uC774\uBBF8\uC9C0 \uB2E4\uC6B4\uB85C\uB4DC' },
+        h('button', {
+          className: S.btnPrimary + ' flex items-center justify-center gap-2 mb-2',
+          onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'png', 'scroll_capture_' + ts); },
+        }, h(IDownload, { size: 16 }), 'PNG \uB2E4\uC6B4\uB85C\uB4DC'),
+        h('button', {
+          className: S.btnSecondary + ' flex items-center justify-center gap-2',
+          onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'jpeg', 'scroll_capture_' + ts); },
+        }, h(IDownload, { size: 16 }), 'JPEG \uB2E4\uC6B4\uB85C\uB4DC')
+      ),
+      h(SbSection, { title: 'OCR 실행' },
+        h('div', { className: 'mb-2' },
+          h(OcrDropdown, { settings: props.settings, value: st.ocrMethod, onChange: function(v) { d({ type: 'SC_UPDATE', v: { ocrMethod: v } }); } })
+        ),
+        h('button', {
+          className: S.btnPrimary + ' flex items-center justify-center gap-2 mt-2',
+          onClick: function() { if (props.onStartOcr) props.onStartOcr(); },
+        }, h(IType, { size: 16 }), 'OCR 실행')
+      ),
+      h(SbSection, null, h('button', { className: S.btnGhost + ' w-full', onClick: function() { d({ type: 'SC_UPDATE', v: { phase: 'READY', resultCanvas: null, frameCount: 0, elapsedSec: 0, matchQuality: 0, consecutiveFails: 0, chainLength: 0, excludedFrames: 0, assembleProgress: 0, memoryMB: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrText: '', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } }); }, }, '\uC0C8 \uCEA1\uCC98 \uC2DC\uC791'))
+    );
+  }
+
+  // OCR_PROCESSING sidebar
+  if (phase === 'OCR_PROCESSING') {
+    return h('div', null,
+      h(SbSection, { title: 'OCR \uCC98\uB9AC \uC911', first: true },
+        h(OcrBadge, { method: st.ocrMethod }),
+        h('div', { className: 'mt-3 text-center' },
+          h('div', { className: S.statLabel }, '\uCCAD\uD06C \uC9C4\uD589'),
+          h('div', { className: 'text-2xl font-bold font-mono text-zinc-100' }, st.ocrChunks > 0 ? st.ocrCurrentChunk + '/' + st.ocrChunks : '\uC900\uBE44 \uC911')
+        ),
+        h('div', { className: 'mt-2 bg-zinc-700 rounded-full h-2' },
+          h('div', { className: 'bg-emerald-500 h-full rounded-full transition-all duration-300', style: { width: (st.ocrProgress || 0) + '%' } }))
+      ),
+      h(SbSection, null, h('button', { className: S.btnSecondary, onClick: function() { if (props.onCancelOcr) props.onCancelOcr(); } }, '\uCDE8\uC18C'))
+    );
+  }
+
+  // OCR_RESULT sidebar
+  if (phase === 'OCR_RESULT') {
+    var tLen = (st.ocrText || '').length;
+    var lCount = (st.ocrText || '').split('\n').length;
+    return h('div', null,
+      h(SbSection, { title: 'OCR \uACB0\uACFC', first: true },
+        h(OcrBadge, { method: st.ocrMethod }),
+        h('div', { className: 'mt-3 grid grid-cols-2 gap-3 text-center' },
+          h('div', null, h('div', { className: S.statLabel }, '\uBB38\uC790 \uC218'), h('div', { className: 'text-lg font-bold font-mono text-zinc-100' }, String(tLen))),
+          h('div', null, h('div', { className: S.statLabel }, '\uC904 \uC218'), h('div', { className: 'text-lg font-bold font-mono text-zinc-100' }, String(lCount)))
+        ),
+        st.resultWidth > 0 ? h('div', { className: 'mt-2 text-center' }, h('div', { className: S.statLabel }, '\uC774\uBBF8\uC9C0'), h('div', { className: 'text-sm font-mono text-zinc-300' }, st.resultWidth + 'x' + st.resultHeight + 'px')) : null
+      ),
+      h(SbSection, { title: '\uB0B4\uBCF4\uB0B4\uAE30' },
+        h('button', { className: S.btnPrimary + ' flex items-center justify-center gap-2 mb-2', onClick: function() { if (props.onCopyText) props.onCopyText(); } },
+          h(IClipboard, { size: 16 }), '\uD14D\uC2A4\uD2B8 \uBCF5\uC0AC'),
+        h('button', { className: S.btnSecondary + ' flex items-center justify-center gap-2 mb-2', onClick: function() { if (props.onDownloadText) props.onDownloadText(); } },
+          h(IDownload, { size: 16 }), '\uD14D\uC2A4\uD2B8 \uB2E4\uC6B4\uB85C\uB4DC (.txt)'),
+        st.resultCanvas ? h('button', { className: S.btnSecondary + ' flex items-center justify-center gap-2', onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'png', 'scroll_capture_' + ts); } },
+          h(IDownload, { size: 16 }), '\uC774\uBBF8\uC9C0 \uB2E4\uC6B4\uB85C\uB4DC (.png)') : null
+      ),
+      h(SbSection, null, h('button', { className: S.btnGhost + ' w-full', onClick: function() { d({ type: 'SC_UPDATE', v: { phase: 'READY', resultCanvas: null, frameCount: 0, elapsedSec: 0, matchQuality: 0, consecutiveFails: 0, chainLength: 0, excludedFrames: 0, assembleProgress: 0, memoryMB: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrText: '', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } }); }, }, '\uC0C8 \uCEA1\uCC98 \uC2DC\uC791'))
+    );
+  }
+
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Mode: File Receive
+   ═══════════════════════════════════════════════════════════════ */
+
+function FileReceiveMain(props) {
+  var st = props.state;
+  var d = props.dispatch;
+
+  // --- Script content per version ---
+  var SCRIPTS = {
+    full: [
+      "$b=[IO.File]::ReadAllBytes($args[0])",
+      "$n=[Text.Encoding]::UTF8.GetBytes((Split-Path $args[0] -Leaf))",
+      "$b=@([byte]$n.Length)+$n+$b",
+      "$d=[Convert]::ToBase64String($b)",
+      '$h=@"',
+      '<canvas id=c style="width:100vw;height:100vh;image-rendering:pixelated;display:block">',
+      '</canvas><script>',
+      "var d=atob('$d'),w=96,h=54,hp=32,dp=w*h-hp,B=dp/4|0,",
+      'T=Math.ceil(d.length/B),f=0,hi=0,',
+      "c=document.getElementById('c'),x;c.width=w;c.height=h;",
+      "x=c.getContext('2d');document.body.style='margin:0;overflow:hidden';",
+      "var P=['#000','#00f','#f00','#fff'];",
+      'function enc(v,pos){for(var j=0;j<4;j++){var k=pos+j;',
+      "x.fillStyle=P[v>>6-j*2&3];x.fillRect(k%w,k/w|0,1,1)}}",
+      'setInterval(function(){',
+      'x.fillStyle=\'#000\';x.fillRect(0,0,w,h);',
+      'enc(0x53,0);enc(0x43,4);enc(f>>8&0xFF,8);enc(f&0xFF,12);',
+      'enc(T>>8&0xFF,16);enc(T&0xFF,20);enc(hi>>8&0xFF,24);enc(hi&0xFF,28);',
+      'var o=f*B;',
+      'for(var i=0;i<B&&o+i<d.length;i++){var v=d.charCodeAt(o+i);',
+      "enc(v,hp+i*4)}",
+      "f=(f+1)%T},500)</" + "script>",
+      '"@',
+      '$h|Out-File $env:TEMP\\t.html -Enc utf8',
+      'Start-Process $env:TEMP\\t.html',
+    ],
+    winforms: [
+      'Add-Type -A System.Windows.Forms,System.Drawing',
+      '$d=[IO.File]::ReadAllBytes($args[0])',
+      '$fn=[Text.Encoding]::UTF8.GetBytes((Split-Path $args[0] -Leaf))',
+      '$d=@([byte]$fn.Length)+$fn+$d',
+      '$w=96;$h=54;$N=$w*$h/4;$T=[math]::Ceiling($d.Length/$N);$n=0',
+      '$P=[Drawing.Color]::Black,[Drawing.Color]::Blue,',
+      '[Drawing.Color]::Red,[Drawing.Color]::White',
+      '$b=New-Object Drawing.Bitmap $w,$h',
+      '$f=New-Object Windows.Forms.Form',
+      '$f.WindowState=2;$f.FormBorderStyle=0',
+      '$p=New-Object Windows.Forms.PictureBox',
+      '$p.Dock=5;$p.SizeMode=1;$p.Image=$b',
+      '$f.Controls.Add($p)',
+      '$t=New-Object Windows.Forms.Timer',
+      '$t.Interval=500',
+      '$t.Add_Tick({',
+      '$g=[Drawing.Graphics]::FromImage($b);$g.Clear([Drawing.Color]::Black);$g.Dispose()',
+      '$o=$script:n*$N',
+      'for($i=0;$i -lt $N -and $o+$i -lt $d.Length;$i++){',
+      '$v=$d[$o+$i]',
+      'for($j=0;$j -lt 4;$j++){$k=$i*4+$j',
+      '$b.SetPixel($k%$w,[math]::Floor($k/$w),',
+      '$P[$v-shr(6-$j*2)-band 3])}}',
+      '$p.Refresh();$f.Text="$($script:n+1)/$T"',
+      '$script:n=($script:n+1)%$T})',
+      '$t.Start()',
+      '[Windows.Forms.Application]::Run($f)',
+    ],
+  };
+
+  var EXEC_CMD = {
+    full: 'powershell -ep bypass -f $env:TEMP\\t.ps1 C:\\path\\to\\file.pptx',
+    winforms: 'powershell -sta -ep bypass -f $env:TEMP\\t.ps1 C:\\path\\to\\file.pptx',
+  };
+
+  // --- SETUP phase ---
+  if (st.phase === 'SETUP') {
+    var scriptLines = SCRIPTS[st.scriptVersion] || SCRIPTS.full;
+    return h('div', { className: 'flex-1 flex flex-col p-6 overflow-y-auto' },
+      h('h2', { className: 'text-lg font-medium text-zinc-200 mb-4' }, '소스 PC 준비 안내'),
+      h('div', { className: 'space-y-4 max-w-2xl' },
+        h('p', { className: 'text-sm text-zinc-400 leading-relaxed' },
+          '소스 PC에서 PowerShell 스크립트를 타이핑하여 파일 전송을 준비합니다. 스크립트는 한 번만 입력하면 이후 재사용 가능합니다.'
+        ),
+        h('div', { className: S.card },
+          h('div', { className: 'flex items-center justify-between mb-2' },
+            h('h3', { className: 'text-sm font-semibold text-blue-400' }, '① 소스 PC에서 메모장 열기'),
+            h(CopyButton, { text: 'notepad $env:TEMP\\t.ps1' })
+          ),
+          h('div', { className: 'bg-zinc-900 rounded-lg px-3 py-2 font-mono text-sm text-zinc-300' },
+            'notepad $env:TEMP\\t.ps1'
+          )
+        ),
+        h('div', { className: S.card },
+          h('div', { className: 'flex items-center justify-between mb-2' },
+            h('h3', { className: 'text-sm font-semibold text-blue-400' }, '② 아래 스크립트를 타이핑 후 저장'),
+            h(CopyButton, { text: scriptLines.join('\n') })
+          ),
+          h('div', { className: 'bg-zinc-950 border border-zinc-700 rounded-lg p-4 font-mono text-xs text-zinc-200 overflow-x-auto max-h-60' },
+            scriptLines.map(function(line, i) {
+              return h('div', { key: i, className: 'flex' },
+                h('span', { className: 'text-zinc-600 select-none w-6 text-right mr-3 flex-shrink-0' }, String(i + 1)),
+                h('span', { className: 'whitespace-pre' }, line)
+              );
+            })
+          ),
+          h('div', { className: 'text-xs text-zinc-500 mt-2' },
+            scriptLines.length + '줄 · 약 ' + scriptLines.join('\n').length + '자'
+          )
+        ),
+        h('div', { className: S.card },
+          h('div', { className: 'flex items-center justify-between mb-2' },
+            h('h3', { className: 'text-sm font-semibold text-blue-400' }, '③ 저장(Ctrl+S) 후 스크립트 실행'),
+            h(CopyButton, { text: EXEC_CMD[st.scriptVersion] || EXEC_CMD.full })
+          ),
+          h('div', { className: 'bg-zinc-900 rounded-lg px-3 py-2 font-mono text-sm text-zinc-300' },
+            EXEC_CMD[st.scriptVersion] || EXEC_CMD.full
+          )
+        ),
+        h('div', { className: S.card },
+          h('h3', { className: 'text-sm font-semibold text-blue-400 mb-2' }, '④ 브라우저에서 F11 (전체 화면)'),
+          h('p', { className: 'text-sm text-zinc-400' },
+            '전체 화면으로 전환하면 캡처 품질이 최적화됩니다.'
+          )
+        )
+      )
+    );
+  }
+
+  // --- STANDBY phase ---
+  if (st.phase === 'STANDBY') {
+    return h('div', { className: 'flex-1 flex flex-col' },
+      h('div', { className: 'flex-1 relative min-h-0' },
+        h(VideoPreview, {
+          stream: props.stream,
+          resolution: props.resolution,
+          fps: props.fps,
+          videoRef: props.videoRef,
+        }),
+        h('div', { className: 'absolute inset-0 flex items-center justify-center pointer-events-none' },
+          h('div', { className: 'bg-zinc-900/80 backdrop-blur rounded-xl p-6 text-center' },
+            h(IGrid, { size: 32, className: 'text-blue-400 mx-auto mb-3 animate-spin-slow' }),
+            h('p', { className: 'text-sm text-zinc-200 font-medium mb-1' }, '픽셀 격자 신호 대기 중...'),
+            h('p', { className: 'text-xs text-zinc-500' }, '소스 PC에서 스크립트를 실행해 주세요'),
+            st.consecutiveMagic > 0 ? h('p', { className: 'text-xs text-blue-400 mt-2' },
+              '매직 감지: ' + st.consecutiveMagic + '/3'
+            ) : null
+          )
+        )
+      ),
+      h('div', { className: 'px-4 py-2 bg-zinc-800/50 text-center' },
+        h('p', { className: 'text-xs text-zinc-500' }, '신호 감지 시 자동으로 진행합니다.')
+      )
+    );
+  }
+
+  // --- CALIBRATE phase ---
+  if (st.phase === 'CALIBRATE') {
+    var pal = st.palette || VisualDecoder.DEFAULT_PALETTE;
+    return h('div', { className: 'flex-1 flex flex-col' },
+      h('div', { className: 'flex-1 relative min-h-0' },
+        h(VideoPreview, {
+          stream: props.stream,
+          resolution: props.resolution,
+          fps: props.fps,
+          videoRef: props.videoRef,
+        }),
+        h('div', { className: 'absolute inset-0 pointer-events-none' },
+          // Grid overlay border
+          h('div', { className: 'absolute inset-4 border-2 border-blue-400/60 rounded-lg' })
+        ),
+        h('div', { className: 'absolute inset-0 flex items-center justify-center pointer-events-none' },
+          h('div', { className: 'bg-zinc-900/80 backdrop-blur rounded-xl p-6 text-center' },
+            h(IGrid, { size: 32, className: 'text-blue-400 mx-auto mb-3' }),
+            h('p', { className: 'text-sm text-zinc-200 font-medium mb-1' },
+              st.calibrationStep === 1 ? '격자 감지됨' : '색상 학습 중...'
+            ),
+            h('p', { className: 'text-xs text-zinc-500' },
+              st.calibrationStep === 1 ? '96×54 격자, 블록 20px' : '프레임 수집: ' + st.totalProcessed + '/20'
+            )
+          )
+        )
+      ),
+      h('div', { className: 'px-4 py-2 bg-zinc-800/50 text-center' },
+        h('p', { className: 'text-xs text-zinc-500' }, '색상 팔레트 학습 중 (' + st.totalProcessed + '/20 프레임)')
+      )
+    );
+  }
+
+  // --- RECEIVING phase ---
+  if (st.phase === 'RECEIVING') {
+    var pct = st.totalFrames > 0 ? Math.round(st.collectedCount / st.totalFrames * 100) : 0;
+    var barClass = pct >= 90 ? 'bg-emerald-500' : 'bg-blue-500';
+    var rateColor = st.validRate >= 80 ? 'text-zinc-100' : st.validRate >= 60 ? 'text-amber-400' : 'text-red-400';
+
+    // Frame map cells
+    var gridCols = Math.min(st.totalFrames, 20);
+    var cellSize = st.totalFrames <= 100 ? 16 : st.totalFrames <= 500 ? 10 : 6;
+    var frameCells = [];
+    for (var i = 0; i < st.totalFrames; i++) {
+      var cellCls = st.framesMap && st.framesMap[i]
+        ? 'bg-emerald-500' : (i === st.lastFrameNum ? 'bg-blue-500 animate-pulse' : 'bg-zinc-700');
+      frameCells.push(
+        h('div', {
+          key: i,
+          className: cellCls + ' rounded-sm',
+          style: { width: cellSize + 'px', height: cellSize + 'px' },
+          title: '프레임 #' + i + (st.framesMap && st.framesMap[i] ? ' ✓' : ''),
+        })
+      );
+    }
+
+    return h('div', { className: 'flex-1 flex flex-col' },
+      // Video area (40%)
+      h('div', { className: 'relative', style: { height: '40%' } },
+        h(VideoPreview, {
+          stream: props.stream,
+          resolution: props.resolution,
+          fps: props.fps,
+          videoRef: props.videoRef,
+        }),
+        h('div', { className: 'absolute top-2 right-3 text-sm font-mono text-white bg-black/60 px-2 py-1 rounded' },
+          'F' + (st.lastFrameNum >= 0 ? st.lastFrameNum + 1 : '-') + '/' + st.totalFrames
+        )
+      ),
+      // Frame map (60%)
+      h('div', { className: 'flex-1 bg-zinc-800 border-t border-zinc-700 p-4 overflow-y-auto' },
+        h('div', { className: 'text-xs text-zinc-500 mb-2' }, '프레임 수집 현황:'),
+        h('div', {
+          className: 'flex flex-wrap gap-px',
+          style: { maxWidth: (gridCols * (cellSize + 1)) + 'px' },
+        }, frameCells),
+        h('div', { className: 'flex items-center gap-3 mt-3 text-xs text-zinc-500' },
+          h('span', { className: 'flex items-center gap-1' },
+            h('span', { className: 'inline-block w-2 h-2 bg-emerald-500 rounded-sm' }), '수집 완료'
+          ),
+          h('span', { className: 'flex items-center gap-1' },
+            h('span', { className: 'inline-block w-2 h-2 bg-zinc-700 rounded-sm' }), '미수집'
+          ),
+          h('span', { className: 'flex items-center gap-1' },
+            h('span', { className: 'inline-block w-2 h-2 bg-blue-500 rounded-sm' }), '현재'
+          )
+        )
+      )
+    );
+  }
+
+  // --- COMPLETE phase ---
+  if (st.phase === 'COMPLETE') {
+    var sizeStr = st.fileSizeKB >= 1024
+      ? (st.fileSizeKB / 1024).toFixed(1) + ' MB'
+      : st.fileSizeKB.toFixed(1) + ' KB';
+
+    return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-4 p-8' },
+      h('div', { className: 'text-emerald-400 mb-2', style: { animation: 'pulse-dot 0.4s ease' } },
+        h('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 64, height: 64, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+          h('path', { d: 'M22 11.08V12a10 10 0 1 1-5.93-9.14' }),
+          h('polyline', { points: '22 4 12 14.01 9 11.01' })
+        )
+      ),
+      h('h2', { className: 'text-xl font-semibold text-zinc-100' }, '파일 수신 완료'),
+      st.fileName ? h('p', { className: 'text-lg font-mono text-zinc-300 mt-1' }, st.fileName) : null,
+      h('p', { className: 'text-2xl font-bold font-mono text-zinc-200' }, sizeStr),
+      h('p', { className: 'text-sm text-zinc-400 mt-2' }, '소스 PC에서 스크립트를 종료해 주세요.'),
+      h('p', { className: 'text-xs text-zinc-500' }, '(브라우저 탭 닫기 또는 Ctrl+C)'),
+    );
+  }
+
+  return h(Placeholder, { icon: IDownload, title: '파일 수신', desc: '상태: ' + st.phase });
+}
+
+function FileReceiveSidebar(props) {
+  var st = props.state;
+  var d = props.dispatch;
+
+  // --- SETUP sidebar ---
+  if (st.phase === 'SETUP') {
+    return h('div', null,
+      h(SbSection, { title: '스크립트 버전', first: true },
+        h(SegCtrl, {
+          options: [
+            { value: 'full', label: '전체(권장)' },
+            { value: 'winforms', label: 'WinForms' },
+          ],
+          value: st.scriptVersion,
+          onChange: function(v) { d({ type: 'FR_UPDATE', v: { scriptVersion: v } }); },
+        })
+      ),
+      h(SbSection, null,
+        h('div', { className: 'text-xs text-zinc-400 space-y-1' },
+          st.scriptVersion === 'full' ? h(Fragment, null,
+            h('p', { className: 'font-medium text-zinc-300' }, '전체 버전 (권장)'),
+            h('p', null, '· 약 1,000자 (8~12분 타이핑)'),
+            h('p', null, '· 프레임 헤더 포함'),
+            h('p', null, '  → 프레임 자동 추적'),
+          ) : h(Fragment, null,
+            h('p', { className: 'font-medium text-zinc-300' }, 'WinForms 폴백'),
+            h('p', null, '· 약 750자 (6~8분)'),
+            h('p', null, '· 브라우저 불필요'),
+            h('p', null, '· Edge JS 차단 시 사용')
+          )
+        )
+      ),
+      h(SbSection, { title: '장치' },
+        h(DeviceSelect, {
+          devices: props.devices,
+          selectedDeviceId: props.selectedDeviceId,
+          dispatch: d,
+        })
+      ),
+      h(SbSection, null,
+        h('button', {
+          className: S.btnPrimary + (!props.deviceConnected ? ' ' + S.btnDisabled : '') + ' flex items-center justify-center gap-2',
+          disabled: !props.deviceConnected,
+          onClick: function() { if (props.onStartReceive) props.onStartReceive(); },
+        },
+          h(IDownload, { size: 16 }),
+          '수신 시작'
+        ),
+        !props.deviceConnected ? h('p', { className: 'text-xs text-zinc-500 mt-2 text-center' }, '소스 PC 스크립트 실행 후 눌러 주세요.') : null
+      )
+    );
+  }
+
+  // --- STANDBY sidebar ---
+  if (st.phase === 'STANDBY') {
+    return h('div', null,
+      h(SbSection, { title: '수신 대기', first: true },
+        h('p', { className: 'text-sm text-zinc-300 mb-3' }, '소스 PC에서 스크립트를 실행해 주세요.'),
+        h('div', { className: 'space-y-2' },
+          h('p', { className: 'text-xs text-zinc-500' }, '실행 명령어:'),
+          h('div', { className: 'font-mono text-xs bg-zinc-900 rounded px-2 py-1 text-zinc-300' },
+            st.scriptVersion === 'winforms'
+              ? 'powershell -sta -ep bypass -f $env:TEMP\\t.ps1 C:\\file'
+              : 'powershell -ep bypass -f $env:TEMP\\t.ps1 C:\\file'
+          )
+        )
+      ),
+      h(SbSection, null,
+        h('p', { className: 'text-xs text-zinc-400 mb-3' },
+          '소스 PC에서 전체 화면(F11)으로 전환하면 자동으로 감지됩니다.'
+        )
+      ),
+      h(SbSection, null,
+        h('button', {
+          className: S.btnDanger,
+          onClick: function() { if (props.onStopReceive) props.onStopReceive(); },
+        }, '수신 중단')
+      )
+    );
+  }
+
+  // --- CALIBRATE sidebar ---
+  if (st.phase === 'CALIBRATE') {
+    var pal = st.palette || VisualDecoder.DEFAULT_PALETTE;
+    var stepIcon = function(done) {
+      return done
+        ? h('span', { className: 'text-emerald-400 mr-1' }, '✓')
+        : h('span', { className: 'text-blue-400 mr-1 inline-block animate-spin-slow' }, '◌');
+    };
+    return h('div', null,
+      h(SbSection, { title: '캘리브레이션', first: true },
+        h('div', { className: 'space-y-3' },
+          h('div', { className: 'flex items-center text-sm ' + (st.calibrationStep >= 1 ? 'text-emerald-400' : 'text-blue-400') },
+            stepIcon(st.calibrationStep >= 1),
+            '① 격자 감지', st.calibrationStep >= 1 ? h('span', { className: 'ml-auto text-xs text-zinc-500' }, '96×54, 20px') : null
+          ),
+          h('div', { className: 'flex items-center text-sm ' + (st.calibrationStep >= 2 ? 'text-emerald-400' : st.calibrationStep === 1 ? 'text-blue-400' : 'text-zinc-500') },
+            stepIcon(st.calibrationStep >= 2),
+            '② 색상 학습',
+            st.calibrationStep >= 1 ? h('span', { className: 'ml-auto text-xs text-zinc-500' }, st.totalProcessed + '/20') : null
+          )
+        )
+      ),
+      h(SbSection, { title: '학습된 팔레트' },
+        h('div', { className: 'space-y-2' },
+          ['검정', '파랑', '빨강', '흰색'].map(function(name, i) {
+            var c = pal[i] || [0, 0, 0];
+            var diff = Math.abs(c[0] - VisualDecoder.DEFAULT_PALETTE[i][0]) +
+                      Math.abs(c[1] - VisualDecoder.DEFAULT_PALETTE[i][1]) +
+                      Math.abs(c[2] - VisualDecoder.DEFAULT_PALETTE[i][2]);
+            var borderCls = diff > 150 ? 'border-amber-500' : 'border-zinc-600';
+            return h('div', { key: i, className: 'flex items-center gap-2' },
+              h('div', {
+                className: 'w-6 h-6 rounded-md border ' + borderCls,
+                style: { backgroundColor: 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')' },
+              }),
+              h('span', { className: 'text-xs text-zinc-400' }, name),
+              h('span', { className: 'text-xs font-mono text-zinc-500 ml-auto' }, '(' + c[0] + ', ' + c[1] + ', ' + c[2] + ')')
+            );
+          })
+        )
+      ),
+      h(SbSection, null,
+        h('button', {
+          className: S.btnDanger,
+          onClick: function() { if (props.onStopReceive) props.onStopReceive(); },
+        }, '수신 중단')
+      )
+    );
+  }
+
+  // --- RECEIVING sidebar ---
+  if (st.phase === 'RECEIVING') {
+    var pct = st.totalFrames > 0 ? Math.round(st.collectedCount / st.totalFrames * 100) : 0;
+    var barClass = pct >= 90 ? 'bg-emerald-500' : 'bg-blue-500';
+    var rateColor = st.validRate >= 80 ? 'text-zinc-100' : st.validRate >= 60 ? 'text-amber-400' : 'text-red-400';
+    var estSize = st.totalFrames * VisualDecoder.BYTES_PER_FRAME;
+    var estSizeStr = estSize >= 1024 * 1024
+      ? (estSize / (1024 * 1024)).toFixed(1) + ' MB'
+      : (estSize / 1024).toFixed(1) + ' KB';
+    var remainSec = st.speedKBs > 0
+      ? Math.round((st.totalFrames - st.collectedCount) * VisualDecoder.BYTES_PER_FRAME / 1024 / st.speedKBs)
+      : 0;
+
+    return h('div', null,
+      h(SbSection, { title: '수신 중', first: true },
+        h('div', { className: 'space-y-1 text-sm' },
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '총 프레임'), h('span', { className: 'text-zinc-200 font-mono' }, String(st.totalFrames))
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '예상 크기'), h('span', { className: 'text-zinc-200 font-mono' }, '~' + estSizeStr)
+          )
+        )
+      ),
+      h(SbSection, { title: '전체 진행률' },
+        h('div', { className: 'flex items-center gap-2 mb-2' },
+          h('div', { className: 'flex-1 bg-zinc-700 rounded-full h-3' },
+            h('div', { className: barClass + ' h-full rounded-full transition-all duration-500', style: { width: pct + '%' } })
+          ),
+          h('span', { className: 'text-lg font-bold font-mono text-zinc-100 w-12 text-right' }, pct + '%')
+        ),
+        h('div', { className: 'space-y-1 text-sm' },
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '수집'),
+            h('span', { className: 'text-zinc-200 font-mono' }, st.collectedCount + ' / ' + st.totalFrames + ' 프레임')
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '루프'),
+            h('span', { className: 'text-zinc-200 font-mono' }, st.loopCount + '회째')
+          ),
+          remainSec > 0 ? h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '남은 시간'),
+            h('span', { className: 'text-zinc-200 font-mono' }, '~' + fmtTime(remainSec))
+          ) : null
+        )
+      ),
+      h(SbSection, { title: '실시간 통계' },
+        h('div', { className: 'space-y-1 text-sm' },
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '검증 통과율'),
+            h('span', { className: rateColor + ' font-mono' }, st.validRate + '%')
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '유효 속도'),
+            h('span', { className: 'text-zinc-200 font-mono' }, st.speedKBs.toFixed(1) + ' KB/s')
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '경과 시간'),
+            h('span', { className: 'text-zinc-200 font-mono' }, fmtTime(st.elapsedSec))
+          )
+        )
+      ),
+      // Low validation rate warning
+      st.validRate > 0 && st.validRate < 60 ? h(SbSection, null,
+        h('div', { className: 'bg-amber-900/30 border border-amber-700/50 rounded-lg p-3' },
+          h('p', { className: 'text-sm text-amber-300 font-medium' }, '⚠ 프레임 검증 실패율이 높습니다. (' + (100 - st.validRate) + '% 실패)'),
+          h('div', { className: 'text-xs text-amber-400 mt-1 space-y-0.5' },
+            h('p', null, '· 소스 PC 화면에 알림/팝업이 없는지 확인'),
+            h('p', null, '· HDMI 케이블 연결 상태 확인'),
+            h('p', null, '· DPI 스케일링이 100%인지 확인')
+          )
+        )
+      ) : null,
+      h(SbSection, null,
+        h('button', {
+          className: S.btnDanger,
+          onClick: function() { if (props.onStopReceive) props.onStopReceive(); },
+        }, '수신 중단')
+      )
+    );
+  }
+
+  // --- COMPLETE sidebar ---
+  if (st.phase === 'COMPLETE') {
+    var sizeStr = st.fileSizeKB >= 1024
+      ? (st.fileSizeKB / 1024).toFixed(1) + ' MB'
+      : st.fileSizeKB.toFixed(1) + ' KB';
+    var sizeBytes = st.fileData ? st.fileData.length : 0;
+
+    return h('div', null,
+      h(SbSection, { title: '전송 완료', first: true },
+        h('div', { className: 'space-y-1 text-sm' },
+          st.fileName ? h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '파일명'),
+            h('span', { className: 'text-zinc-200 font-mono text-xs truncate max-w-[140px]', title: st.fileName }, st.fileName)
+          ) : null,
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '크기'),
+            h('span', { className: 'text-zinc-200 font-mono' }, sizeBytes.toLocaleString() + ' 바이트')
+          ),
+        )
+      ),
+      h(SbSection, { title: '전송 통계' },
+        h('div', { className: 'space-y-1 text-sm' },
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '총 소요'),
+            h('span', { className: 'text-zinc-200 font-mono' }, fmtTime(st.elapsedSec))
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '유효 속도'),
+            h('span', { className: 'text-zinc-200 font-mono' }, st.speedKBs.toFixed(1) + ' KB/s')
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '수신 프레임'),
+            h('span', { className: 'text-zinc-200 font-mono' }, String(st.totalProcessed))
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '유효 프레임'),
+            h('span', { className: 'text-zinc-200 font-mono' }, st.collectedCount + ' / ' + st.totalFrames + ' (100%)')
+          ),
+          h('div', { className: 'flex justify-between' },
+            h('span', { className: 'text-zinc-500' }, '루프 횟수'),
+            h('span', { className: 'text-zinc-200 font-mono' }, String(st.loopCount))
+          )
+        )
+      ),
+      h(SbSection, null,
+        h('button', {
+          className: S.btnPrimary + ' flex items-center justify-center gap-2 mb-2',
+          onClick: function() { if (props.onDownloadFile) props.onDownloadFile(); },
+        },
+          h(IDownload, { size: 16 }),
+          '파일 다운로드', h('span', { className: 'text-xs opacity-75 ml-1' }, sizeStr)
+        ),
+        h('button', {
+          className: S.btnSecondary,
+          onClick: function() { if (props.onNewReceive) props.onNewReceive(); },
+        }, '새 파일 수신')
+      )
+    );
+  }
+
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Mode: Text Capture
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════
+   Mode: Block Text
+   ═══════════════════════════════════════════════════════════════ */
+
+function BlockTextMain(props) {
+  var st = props.state;
+  // SETUP: no device
+  if (st.phase === 'SETUP' && !props.deviceConnected) {
+    // Permission needed (macOS/privacy browsers)
+    if (props.needsPermission) {
+      return h(Placeholder, {
+        icon: IMonitor,
+        title: '\uCE74\uBA54\uB77C \uC811\uADFC \uAD8C\uD55C\uC774 \uD544\uC694\uD569\uB2C8\uB2E4',
+        desc: 'HDMI \uCEA1\uCC98\uCE74\uB4DC\uAC00 \uAC10\uC9C0\uB418\uC5C8\uC9C0\uB9CC, \uBE0C\uB77C\uC6B0\uC800 \uCE74\uBA54\uB77C \uAD8C\uD55C\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.\nmacOS\uC5D0\uC11C\uB294 \uCE74\uBA54\uB77C \uC811\uADFC\uC744 \uD5C8\uC6A9\uD574\uC57C \uCEA1\uCC98\uCE74\uB4DC\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.',
+      },
+        h('button', {
+          className: S.btnPrimary + ' mt-4 max-w-xs',
+          onClick: function() { if (props.onRequestPermission) props.onRequestPermission(); },
+        }, '\uCE74\uBA54\uB77C \uC811\uADFC \uD5C8\uC6A9')
+      );
+    }
+    if (props.permissionDenied) {
+      return h(Placeholder, {
+        icon: IMonitor,
+        title: '\uCE74\uBA54\uB77C \uAD8C\uD55C\uC774 \uAC70\uBD80\uB418\uC5C8\uC2B5\uB2C8\uB2E4',
+        desc: '\uBE0C\uB77C\uC6B0\uC800 \uC124\uC815\uC5D0\uC11C \uCE74\uBA54\uB77C \uAD8C\uD55C\uC744 \uD5C8\uC6A9\uD55C \uD6C4 \uD398\uC774\uC9C0\uB97C \uC0C8\uB85C\uACE0\uCE68\uD574 \uC8FC\uC138\uC694.\nmacOS: \uC2DC\uC2A4\uD15C \uC124\uC815 \u2192 \uAC1C\uC778\uC815\uBCF4 \uBCF4\uD638 \uBC0F \uBCF4\uC548 \u2192 \uCE74\uBA54\uB77C \u2192 Chrome \uD5C8\uC6A9',
+      },
+        h('button', {
+          className: S.btnSecondary + ' mt-4 max-w-xs',
+          onClick: function() { window.location.reload(); },
+        }, '\uD398\uC774\uC9C0 \uC0C8\uB85C\uACE0\uCE68')
+      );
+    }
+    return h(Placeholder, { icon: IMonitor, title: '\uCEA1\uCC98\uCE74\uB4DC\uB97C \uC5F0\uACB0\uD574 \uC8FC\uC138\uC694', desc: '\uBE14\uB85D \uD14D\uC2A4\uD2B8\uB294 HDMI \uCEA1\uCC98\uCE74\uB4DC\uB97C \uD1B5\uD574 \uC18C\uC2A4 PC \uD654\uBA74\uC758 \uD14D\uC2A4\uD2B8 \uC120\uD0DD \uC601\uC5ED\uC744 \uAC10\uC9C0\uD569\uB2C8\uB2E4.' },
+      h('div', { className: 'flex items-center gap-2 text-zinc-500 text-xs mt-2' },
+        h(ILoader, { size: 14, className: 'animate-spin-slow' }), '\uC7A5\uCE58\uB97C \uAC10\uC9C0\uD558\uB294 \uC911...'
+      )
+    );
+  }
+  // SETUP: device connected, show guide + preview
+  if (st.phase === 'SETUP') {
+    return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-4 p-8' },
+      h(IClipboard, { size: 64, className: 'text-zinc-600' }),
+      h('h2', { className: 'text-lg font-medium text-zinc-300' }, '\ube14\ub85d \ud14d\uc2a4\ud2b8 \uc0ac\uc6a9 \uc548\ub0b4'),
+      h('div', { className: 'text-sm text-zinc-500 max-w-lg text-center leading-relaxed space-y-3' },
+        h('p', null, '소스 PC에서 텍스트를 드래그하여 선택하면, 자동으로 해당 영역을 감지하고 OCR을 수행합니다.'),
+        h('p', null, '감지가 시작되면 소스 PC에서 텍스트를 선택해 주세요.'),
+        h('p', null, '텍스트 선택 후 약 2초 내에 자동으로 감지하여 OCR을 수행합니다.')
+      )
+    );
+  }
+  // MONITORING / PROCESSING: live video (toggleable) + overlays for detection & OCR
+  if (st.phase === 'MONITORING' || st.phase === 'PROCESSING') {
+    var roi = st.roiRect;
+    var isProcessing = st.phase === 'PROCESSING';
+    var showLive = st.showLiveView !== false;
+    return h('div', { className: 'flex-1 flex flex-col min-h-0 relative' },
+      // Video element — ALWAYS in DOM for frame capture, visually hidden when live view off
+      h('video', {
+        ref: function(el) {
+          if (el) {
+            if (props.videoRef) props.videoRef.current = el;
+            if (props.stream && el.srcObject !== props.stream) el.srcObject = props.stream;
+          }
+        },
+        autoPlay: true, playsInline: true, muted: true,
+        className: showLive ? 'flex-1 object-contain bg-black min-h-0' : 'absolute w-0 h-0 overflow-hidden',
+      }),
+      // When live view is off, show compact status panel
+      !showLive ? h('div', { className: 'flex-1 flex flex-col items-center justify-center bg-zinc-900 gap-4' },
+        h('div', { className: 'text-center' },
+          h('div', { className: 'size-16 rounded-full mx-auto mb-3 flex items-center justify-center ' + (isProcessing ? 'bg-emerald-900/40 border border-emerald-700' : st.detectStatus === 'detected' ? 'bg-cyan-900/40 border border-cyan-700 animate-pulse' : 'bg-zinc-800 border border-zinc-600') },
+            isProcessing ? h(ILoader, { size: 28, className: 'text-emerald-400 animate-spin-slow' }) : h(IClipboard, { size: 28, className: st.detectStatus === 'detected' ? 'text-cyan-400' : 'text-zinc-500' })
+          ),
+          h('p', { className: 'text-sm font-medium ' + (isProcessing ? 'text-emerald-300' : st.detectStatus === 'detected' ? 'text-cyan-300' : 'text-zinc-400') },
+            isProcessing ? 'OCR \uCC98\uB9AC \uC911...' : st.detectStatus === 'detected' ? '\uD654\uBA74 \uBCC0\uD654 \uAC10\uC9C0' : '\uAC10\uC9C0 \uB300\uAE30 \uC911'
+          ),
+          isProcessing && st.ocrProgress > 0 ? h('div', { className: 'w-48 mx-auto mt-3 bg-zinc-700 rounded-full h-1.5' },
+            h('div', { className: 'bg-emerald-500 h-full rounded-full transition-all duration-300', style: { width: st.ocrProgress + '%' } })
+          ) : null,
+          h('p', { className: 'text-xs text-zinc-600 mt-3' }, '\uB77C\uC774\uBE0C \uD654\uBA74 \uAEBC\uC9D0 \u2022 \uAC10\uC9C0 \uACC4\uC18D \uC911')
+        )
+      ) : null,
+      // Resolution badge (only when live view is on)
+      showLive && props.resolution ? h('div', { className: 'absolute bottom-2 left-3 text-xs font-mono text-zinc-500' },
+        props.resolution + (props.fps ? ' @ ' + props.fps + 'fps' : '')
+      ) : null,
+      // ROI detection overlay (only when live view is on)
+      showLive && roi ? h('div', {
+        className: 'absolute border-2 border-cyan-400 shadow-[0_0_0_1px_rgba(34,211,238,0.35)] pointer-events-none transition-all duration-150',
+        style: { left: roi.x + '%', top: roi.y + '%', width: roi.w + '%', height: roi.h + '%' }
+      }) : null,
+      // OCR processing overlay (only when live view is on)
+      showLive && isProcessing ? h('div', { className: 'absolute inset-0 bg-black/50 flex flex-col items-center justify-center gap-3 z-10' },
+        h(ILoader, { size: 36, className: 'text-emerald-400 animate-spin-slow' }),
+        h('p', { className: 'text-sm font-medium text-zinc-200' }, 'OCR \uCC98\uB9AC \uC911...'),
+        h('div', { className: 'w-48 bg-zinc-700 rounded-full h-1.5' },
+          h('div', { className: 'bg-emerald-500 h-full rounded-full transition-all duration-300', style: { width: (st.ocrProgress || 0) + '%' } })
+        ),
+        st.ocrChunks > 0 ? h('p', { className: 'text-xs text-zinc-400' },
+          '\uCCAD\uD06C ' + st.ocrCurrentChunk + '/' + st.ocrChunks
+        ) : null
+      ) : null,
+      // Detection status indicator (bottom-left, only when live view is on)
+      showLive && !isProcessing && st.detectStatus !== 'idle' ? h('div', { className: 'absolute bottom-4 left-4 flex items-center gap-3' },
+        h('div', { className: 'relative size-16 rounded-full bg-zinc-900/80 border border-zinc-600 flex items-center justify-center' },
+          h('svg', { width: 56, height: 56, className: 'absolute -rotate-90' },
+            h('circle', { cx: 28, cy: 28, r: 24, fill: 'none', stroke: '#3f3f46', strokeWidth: 3 }),
+            h('circle', { cx: 28, cy: 28, r: 24, fill: 'none', stroke: '#22d3ee', strokeWidth: 3, strokeDasharray: String(2 * Math.PI * 24), strokeDashoffset: String(2 * Math.PI * 24 * (1 - st.stabilityPct / 100)), strokeLinecap: 'round', className: 'transition-all duration-200' })
+          ),
+          h('span', { className: 'text-xs font-mono text-cyan-300 z-10' }, Math.round(st.stabilityPct) + '%')
+        ),
+        h('div', { className: 'bg-zinc-900/80 text-zinc-200 text-xs px-2 py-1 rounded-md' },
+          st.detectStatus === 'detected' ? '\uD654\uBA74 \uBCC0\uD654 \uAC10\uC9C0...' : st.detectStatus === 'stabilizing' ? '\uC120\uD0DD \uC601\uC5ED \uAC10\uC9C0\uB428' : '\uB300\uAE30 \uC911'
+        )
+      ) : null,
+      // OCR badge top-right
+      showLive ? h('div', { className: 'absolute top-3 right-3' }, h(OcrBadge, { method: st.ocrMethod })) : null
+    );
+  }
+  return h(Placeholder, { icon: IClipboard, title: '\ube14\ub85d \ud14d\uc2a4\ud2b8', desc: '\uc0c1\ud0dc: ' + st.phase });
+}
+
+function BlockTextSidebar(props) {
+  var st = props.state;
+  var d = props.dispatch;
+  var dis = !props.deviceConnected;
+
+  if (st.phase === 'SETUP') {
+    return h('div', null,
+      h(SbSection, { title: '\uc7a5\uce58', first: true },
+        h(DeviceSelect, { devices: props.devices, selectedDeviceId: props.selectedDeviceId, dispatch: d })
+      ),
+      h(SbSection, { title: '캡처 간격' },
+        h('div', { className: 'flex items-center gap-3' },
+          h('input', {
+            type: 'range', min: '0.5', max: '2.0', step: '0.5',
+            value: String(st.stabilityThreshold),
+            onChange: function(e) { d({ type: 'BT_UPDATE', v: { stabilityThreshold: parseFloat(e.target.value) } }); },
+            className: 'flex-1 accent-blue-500',
+          }),
+          h('span', { className: 'text-sm font-mono text-zinc-300 w-12 text-right' }, st.stabilityThreshold.toFixed(1) + 's')
+        ),
+        h('p', { className: 'text-xs text-zinc-500 mt-1' }, '프레임 캡처 간격. 높을수록 정확하고 낮을수록 빠릅니다.')
+      ),
+      h(SbSection, { title: 'OCR 방법' },
+        h(OcrDropdown, { settings: props.settings, value: st.ocrMethod, onChange: function(v) { d({ type: 'BT_UPDATE', v: { ocrMethod: v } }); } })
+      ),
+      h(SbSection, null,
+        h('div', { className: 'flex items-center justify-between' },
+          h('label', { className: 'text-xs text-zinc-400' }, '라이브 화면'),
+          h('div', {
+            className: 'w-11 h-6 rounded-full relative cursor-pointer transition-colors duration-150 flex-shrink-0 ' + (st.showLiveView ? 'bg-blue-600' : 'bg-zinc-600'),
+            onClick: function() { d({ type: 'BT_UPDATE', v: { showLiveView: !st.showLiveView } }); }
+          },
+            h('div', { className: 'absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all duration-150 ' + (st.showLiveView ? 'right-0.5' : 'left-0.5') })
+          )
+        )
+      ),
+      h(SbSection, null,
+        h('button', {
+          className: S.btnPrimary + (dis ? ' ' + S.btnDisabled : '') + ' flex items-center justify-center gap-2',
+          disabled: dis,
+          onClick: function() { if (!dis && props.onStartBlockText) props.onStartBlockText(); }
+        },
+          h('span', { className: 'w-2.5 h-2.5 rounded-full bg-white inline-block' }), '\uac10\uc9c0 \uc2dc\uc791'),
+        !dis ? h('p', { className: 'text-xs text-zinc-500 text-center mt-2' }, 'Space \ud0a4\ub85c\ub3c4 \uc2dc\uc791\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.') : null
+      )
+    );
+  }
+
+  if (st.phase === 'MONITORING' || st.phase === 'PROCESSING') {
+    var statusBadge;
+    if (st.phase === 'PROCESSING') statusBadge = h('span', { className: 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-300' }, 'OCR \uCC98\uB9AC \uC911');
+    else if (st.detectStatus === 'idle') statusBadge = h('span', { className: 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-zinc-700 text-zinc-300' }, '\uB300\uAE30');
+    else if (st.detectStatus === 'detected') statusBadge = h('span', { className: 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-300' }, '\uBCC0\uD654\uAC10\uC9C0');
+    else if (st.detectStatus === 'stabilizing') statusBadge = h('span', { className: 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-blue-900/50 text-blue-300' }, '\uC120\uD0DD\uAC10\uC9C0');
+    else statusBadge = h('span', { className: 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-zinc-700 text-zinc-300' }, '\uB300\uAE30');
+
+    // OCR progress bar (only during PROCESSING)
+    var ocrProgress = st.phase === 'PROCESSING' ? h('div', { className: 'mt-2' },
+      h('div', { className: 'bg-zinc-700 rounded-full h-1.5 w-full overflow-hidden' },
+        h('div', { className: 'bg-emerald-500 h-full rounded-full transition-all duration-300', style: { width: (st.ocrProgress || 0) + '%' } })
+      ),
+      st.ocrChunks > 0 ? h('p', { className: 'text-xs text-zinc-500 mt-1' },
+        '\uCCAD\uD06C ' + st.ocrCurrentChunk + '/' + st.ocrChunks + ' (' + (st.ocrProgress || 0) + '%)'
+      ) : h('p', { className: 'text-xs text-zinc-500 mt-1' }, 'OCR \uC900\uBE44 \uC911...')
+    ) : null;
+
+    // Last captured text preview
+    var lastText = st.processingText || '';
+    var lastCaptureSection = lastText ? h(SbSection, { title: '\uB9C8\uC9C0\uB9C9 \uCEA1\uCC98' },
+      h('div', {
+        className: 'bg-zinc-800 rounded-lg p-2 text-xs text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-32 overflow-y-auto cursor-pointer hover:bg-zinc-700/80 transition-colors',
+        onClick: function() { if (navigator.clipboard && lastText) { navigator.clipboard.writeText(lastText); } },
+        title: '\uD074\uB9AD\uD558\uC5EC \uBCF5\uC0AC'
+      }, lastText),
+      h('p', { className: 'text-xs text-zinc-500 mt-1' }, '\uD074\uB9AD\uD558\uBA74 \uD074\uB9BD\uBCF4\uB4DC\uC5D0 \uBCF5\uC0AC\uB429\uB2C8\uB2E4')
+    ) : null;
+
+    return h('div', null,
+      // Detection status + OCR badge
+      h(SbSection, { title: '\uAC10\uC9C0 \uC0C1\uD0DC', first: true },
+        h('div', { className: 'flex items-center gap-2 flex-wrap' },
+          statusBadge,
+          h(OcrBadge, { method: st.ocrMethod })
+        ),
+        ocrProgress
+      ),
+      // Capture interval
+      h(SbSection, { title: '\uCEA1\uCC98 \uAC04\uACA9' },
+        h('div', { className: 'flex items-center gap-3' },
+          h('input', {
+            type: 'range', min: '0.5', max: '2.0', step: '0.5',
+            value: String(st.stabilityThreshold),
+            onChange: function(e) { d({ type: 'BT_UPDATE', v: { stabilityThreshold: parseFloat(e.target.value) } }); },
+            className: 'flex-1 accent-blue-500',
+            disabled: st.phase === 'PROCESSING'
+          }),
+          h('span', { className: 'text-sm font-mono text-zinc-300 w-12 text-right' }, st.stabilityThreshold.toFixed(1) + 's')
+        )
+      ),
+      // Live view toggle
+      h(SbSection, null,
+        h('div', { className: 'flex items-center justify-between' },
+          h('label', { className: 'text-xs text-zinc-400' }, '라이브 화면'),
+          h('div', {
+            className: 'w-11 h-6 rounded-full relative cursor-pointer transition-colors duration-150 flex-shrink-0 ' + (st.showLiveView ? 'bg-blue-600' : 'bg-zinc-600'),
+            onClick: function() { d({ type: 'BT_UPDATE', v: { showLiveView: !st.showLiveView } }); }
+          },
+            h('div', { className: 'absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all duration-150 ' + (st.showLiveView ? 'right-0.5' : 'left-0.5') })
+          )
+        )
+      ),
+      // Last captured text
+      lastCaptureSection,
+      // History
+      h(SbSection, { title: '\uC804\uC1A1 \uC774\uB825 (' + (st.history || []).length + ')' },
+        st.history && st.history.length > 0 ? h(Fragment, null,
+          h('button', { className: S.btnGhost + ' text-xs mb-2', onClick: function() { if (props.onClearHistory) props.onClearHistory(); } }, '\uC774\uB825 \uC9C0\uC6B0\uAE30'),
+          h('div', { className: 'max-h-36 overflow-y-auto divide-y divide-zinc-700' },
+            st.history.map(function(item, i) {
+              return h('div', { key: item.id || i, className: 'py-2 cursor-pointer hover:bg-zinc-700/50 px-1 rounded transition-colors', onClick: function() { if (navigator.clipboard) navigator.clipboard.writeText(item.text); } },
+                h('div', { className: 'text-xs text-zinc-500 font-mono' }, item.time),
+                h('div', { className: 'text-sm text-zinc-300 truncate' }, item.text.substring(0, 80) + (item.text.length > 80 ? '...' : ''))
+              );
+            })
+          )
+        ) : h('p', { className: 'text-xs text-zinc-500' }, '\uC544\uC9C1 \uC804\uC1A1\uB41C \uD14D\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.')
+      ),
+      // Stop button
+      h(SbSection, null,
+        h('button', { className: S.btnDanger + ' flex items-center justify-center gap-2', onClick: function() { if (props.onStopBlockText) props.onStopBlockText(); } }, '\uAC10\uC9C0 \uC911\uB2E8'),
+        h('p', { className: 'text-xs text-zinc-500 text-center mt-2' }, 'Escape\uB85C \uC911\uB2E8')
+      )
+    );
+  }
+
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Mode: Settings
+   ═══════════════════════════════════════════════════════════════ */
+
+var PROVIDERS = [
+  { id: 'cv', name: 'Google Cloud Vision', kf: 'cvApiKey', hasAuth: true },
+  { id: 'oai', name: 'OpenAI', kf: 'oaiApiKey', mf: 'oaiModel', models: [['gpt-4o','GPT-4o'],['gpt-4o-mini','GPT-4o Mini']] },
+  { id: 'ant', name: 'Anthropic', kf: 'antApiKey', mf: 'antModel', models: [['claude-4','Claude 4'],['claude-3.5-sonnet','Claude 3.5 Sonnet']], note: true },
+  { id: 'gem', name: 'Google Gemini', kf: 'gemApiKey', mf: 'gemModel', models: [['gemini-2.0','Gemini 2.0'],['gemini-1.5-pro','Gemini 1.5 Pro']] },
+];
+
+function SettingsMain(props) {
+  var st = props.state;
+  var d = props.dispatch;
+  var _t = useState({}); var tests = _t[0]; var setTests = _t[1];
+
+  function upd(k, v) { var p = {}; p[k] = v; d({ type: 'SET_UPDATE', v: p }); }
+
+  function testProvider(prov) {
+    var r = Object.assign({}, tests); r[prov.id] = { s: 'testing', m: '' }; setTests(r);
+    var key = prov.hasAuth ? (st.cvAuthType === 'apiKey' ? st.cvApiKey : st.cvOauthToken) : st[prov.kf];
+    if (!key) { var r2 = Object.assign({}, tests); r2[prov.id] = { s: 'err', m: 'API \ud0a4\ub97c \uc785\ub825\ud574 \uc8fc\uc138\uc694.' }; setTests(r2); return; }
+    var t0 = Date.now();
+    var pr;
+    var B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    if (prov.id === 'cv') {
+      var hdr = { 'Content-Type': 'application/json' };
+      var url = 'https://vision.googleapis.com/v1/images:annotate';
+      if (st.cvAuthType === 'apiKey') url += '?key=' + encodeURIComponent(st.cvApiKey);
+      else hdr['Authorization'] = 'Bearer ' + st.cvOauthToken;
+      pr = fetch(url, { method: 'POST', headers: hdr, body: JSON.stringify({ requests: [{ image: { content: B64 }, features: [{ type: 'TEXT_DETECTION' }] }] }) });
+    } else if (prov.id === 'oai') {
+      pr = fetch('https://api.openai.com/v1/models', { headers: { 'Authorization': 'Bearer ' + st.oaiApiKey } });
+    } else if (prov.id === 'ant') {
+      pr = fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': st.antApiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: st.antModel, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }) });
+    } else {
+      pr = fetch('https://generativelanguage.googleapis.com/v1/models?key=' + encodeURIComponent(st.gemApiKey));
+    }
+    pr.then(function(res) {
+      var ms = Date.now() - t0; var r2 = Object.assign({}, tests);
+      r2[prov.id] = res.ok ? { s: 'ok', m: '\uc5f0\uacb0 \uc131\uacf5 (' + ms + 'ms)' } : { s: 'err', m: res.status === 401 || res.status === 403 ? 'API \ud0a4\uac00 \uc720\ud6a8\ud558\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.' : res.status === 429 ? '\uc694\uccad \ud55c\ub3c4 \ucd08\uacfc. \uc7a0\uc2dc \ud6c4 \uc7ac\uc2dc\ub3c4.' : 'HTTP ' + res.status + ' \uc624\ub958' };
+      setTests(r2);
+    }).catch(function() { var r2 = Object.assign({}, tests); r2[prov.id] = { s: 'err', m: '\ub124\ud2b8\uc6cc\ud06c \uc5f0\uacb0\uc744 \ud655\uc778\ud574 \uc8fc\uc138\uc694.' }; setTests(r2); });
+  }
+
+  function clearKey(prov) {
+    if (prov.hasAuth) { upd('cvApiKey', ''); upd('cvOauthToken', ''); }
+    else upd(prov.kf, '');
+    var r = Object.assign({}, tests); delete r[prov.id]; setTests(r);
+  }
+
+  function provCard(prov) {
+    var t = tests[prov.id] || {};
+    var keyVal = prov.hasAuth ? (st.cvAuthType === 'apiKey' ? st.cvApiKey : st.cvOauthToken) : st[prov.kf];
+    var keyField = prov.hasAuth ? (st.cvAuthType === 'apiKey' ? 'cvApiKey' : 'cvOauthToken') : prov.kf;
+    return h('div', { key: prov.id, className: 'bg-zinc-700 border border-zinc-600 rounded-lg p-3 space-y-3' },
+      h('div', { className: 'flex items-center justify-between' },
+        h('span', { className: 'text-sm font-medium text-zinc-200' }, prov.name),
+        keyVal ? h('button', { className: 'text-xs text-red-400 hover:text-red-300', onClick: function() { clearKey(prov); } }, '\ud0a4 \uc0ad\uc81c') : null
+      ),
+      prov.models
+        ? h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\ubaa8\ub378'),
+            h('select', { className: S.select, value: st[prov.mf], onChange: function(e) { upd(prov.mf, e.target.value); } },
+              prov.models.map(function(m) { return h('option', { key: m[0], value: m[0] }, m[1]); })))
+        : h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\uae30\ub2a5'),
+            h('div', { className: 'text-sm text-zinc-300 bg-zinc-600 rounded-lg px-3 py-2' }, 'DOCUMENT_TEXT_DETECTION')),
+      prov.hasAuth ? h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\uc778\uc99d \ubc29\uc2dd'),
+        h(SegCtrl, { options: [{ value: 'apiKey', label: 'API Key' }, { value: 'oauth', label: 'OAuth 2.0' }], value: st.cvAuthType, onChange: function(v) { upd('cvAuthType', v); } })
+      ) : null,
+      h('div', null,
+        h('label', { className: 'text-xs text-zinc-400 block mb-1' }, prov.hasAuth ? (st.cvAuthType === 'apiKey' ? 'API Key' : 'Access Token') : 'API Key'),
+        h('input', { type: 'password', placeholder: 'API \ud0a4\ub97c \uc785\ub825\ud558\uc138\uc694', className: S.select, value: keyVal, onChange: function(e) { upd(keyField, e.target.value); } })
+      ),
+      prov.note ? h('div', { className: 'bg-amber-900/20 border border-amber-800/30 rounded-lg p-2' },
+        h('p', { className: 'text-xs text-amber-400/80' }, '\u26A0 Claude Max \uad6c\ub3c5(claude.ai)\uacfc Anthropic API\ub294 \ubcc4\ub3c4 \uacfc\uae08/\ud55c\ub3c4 \uccb4\uacc4\uc785\ub2c8\ub2e4.')
+      ) : null,
+      prov.hasAuth && st.cvAuthType === 'oauth' ? h('div', { className: 'bg-blue-900/20 border border-blue-800/30 rounded-lg p-2' },
+        h('p', { className: 'text-xs text-blue-400/80' }, 'OAuth Access Token\uc740 \ub9cc\ub8cc\ub420 \uc218 \uc788\uc2b5\ub2c8\ub2e4. 401 \uc624\ub958 \uc2dc \uc7ac\ubc1c\uae09\ud558\uc138\uc694.')
+      ) : null,
+      h('div', { className: 'flex items-center gap-2' },
+        h('button', { className: 'bg-zinc-600 hover:bg-zinc-500 text-zinc-200 px-3 py-1.5 rounded-lg text-xs transition-colors' + (t.s === 'testing' ? ' opacity-50' : ''), onClick: function() { testProvider(prov); }, disabled: t.s === 'testing' }, t.s === 'testing' ? '\ud14c\uc2a4\ud2b8 \uc911...' : '\uc5f0\uacb0 \ud14c\uc2a4\ud2b8'),
+        t.m ? h('span', { className: 'text-xs ' + (t.s === 'ok' ? 'text-emerald-400' : 'text-red-400') }, t.m) : null
+      )
+    );
+  }
+
+  return h('div', { className: 'flex-1 overflow-y-auto p-6' },
+    h('h2', { className: 'text-lg font-medium text-zinc-200 mb-6' }, '\uc124\uc815'),
+    h('div', { className: 'space-y-6 max-w-2xl' },
+      h('div', { id: 'settings-ocr', className: S.card },
+        h('h3', { className: 'text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2' },
+          h(IGrid, { size: 16, className: 'text-blue-400' }), '\ud074\ub77c\uc6b0\ub4dc OCR \uc124\uc815'),
+        h('div', { className: 'mb-4' },
+          h('label', { className: 'text-xs text-zinc-400 block mb-2' }, 'API \ud0a4 \uc800\uc7a5 \ubc29\uc2dd'),
+          h(SegCtrl, { options: [{ value: 'none', label: '\uc800\uc7a5 \uc548 \ud568' }, { value: 'session', label: '\uc138\uc158' }, { value: 'local', label: '\ube0c\ub77c\uc6b0\uc800 \uc800\uc7a5' }], value: st.keyStorage, onChange: function(v) { upd('keyStorage', v); } }),
+          h('p', { className: 'text-xs text-zinc-500 mt-1' },
+            st.keyStorage === 'none' ? '\ud398\uc774\uc9c0\ub97c \ub2eb\uc73c\uba74 \ud0a4\uac00 \uc0ad\uc81c\ub429\ub2c8\ub2e4.' : st.keyStorage === 'session' ? '\ud0ed\uc744 \ub2eb\uc73c\uba74 \ud0a4\uac00 \uc0ad\uc81c\ub429\ub2c8\ub2e4.' : '\u26A0 localStorage\uc5d0 \uc800\uc7a5\ub429\ub2c8\ub2e4. \uacf5\uc720 PC\uc5d0\uc11c\ub294 \uc0ac\uc6a9 \ud6c4 \ud0a4\ub97c \uc0ad\uc81c\ud558\uc138\uc694.')
+        ),
+        h('div', { className: S.sectionDivider }),
+        h('div', { className: 'space-y-3' }, PROVIDERS.map(provCard)),
+        h('p', { className: 'text-xs text-zinc-500 mt-3' }, 'Google Cloud Vision\uc740 Google Gemini\uc640 \ubcc4\uac1c \uc81c\ud488\uc785\ub2c8\ub2e4. Cloud Console\uc5d0\uc11c Vision API\ub97c \ubcc4\ub3c4\ub85c \ud65c\uc131\ud654\ud558\uc138\uc694.')
+      ),
+      h('div', { id: 'settings-capture', className: S.card },
+        h('h3', { className: 'text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2' },
+          h(ICamera, { size: 16, className: 'text-blue-400' }), '\ucea1\ucc98 \uc124\uc815'),
+        h('div', { className: 'space-y-4' },
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-2' }, '\uae30\ubcf8 \uc2a4\ud06c\ub864 \ubc29\ud5a5'),
+            h(SegCtrl, { options: [{ value: 'vertical', label: '\uc138\ub85c' }, { value: 'horizontal', label: '\uac00\ub85c' }], value: st.capDirection, onChange: function(v) { upd('capDirection', v); } })),
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\ud504\ub808\uc784 \ub808\uc774\ud2b8'),
+            h('select', { className: S.select, value: String(st.capFrameRate), onChange: function(e) { upd('capFrameRate', parseInt(e.target.value)); } },
+              h('option', { value: '15' }, '15 fps'), h('option', { value: '24' }, '24 fps'), h('option', { value: '30' }, '30 fps'))),
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\ucd5c\ub300 \ud504\ub808\uc784 \uc218'),
+            h('input', { type: 'number', className: S.select, value: st.capMaxFrames, onChange: function(e) { upd('capMaxFrames', parseInt(e.target.value) || 2000); } })),
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\uba54\ubaa8\ub9ac \uc608\uc0b0 (MB)'),
+            h('input', { type: 'number', className: S.select, value: st.capMemoryBudget, onChange: function(e) { upd('capMemoryBudget', parseInt(e.target.value) || 1500); } }))
+        )
+      ),
+      h('div', { id: 'settings-blocktext', className: S.card },
+        h('h3', { className: 'text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2' },
+          h(IClipboard, { size: 16, className: 'text-blue-400' }), '\ube14\ub85d \ud14d\uc2a4\ud2b8 \uc124\uc815'),
+        h('div', { className: 'space-y-4' },
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-2' }, '\uc548\uc815\uc131 \uc784\uacc4\uce58'),
+            h('div', { className: 'flex items-center gap-3' },
+              h('input', { type: 'range', min: '50', max: '100', step: '5', value: st.btStabilityThreshold, onChange: function(e) { upd('btStabilityThreshold', parseInt(e.target.value)); }, className: 'flex-1 accent-blue-500' }),
+              h('span', { className: 'text-sm font-mono text-zinc-300 w-12 text-right' }, (st.btStabilityThreshold / 100).toFixed(2)))),
+          h('div', { className: 'flex items-center justify-between' },
+            h('label', { className: 'text-xs text-zinc-400' }, '\ud074\ub9bd\ubcf4\ub4dc \uc790\ub3d9 \ubcf5\uc0ac'),
+            h('div', { className: 'w-11 h-6 rounded-full relative cursor-pointer transition-colors duration-150 flex-shrink-0 ' + (st.btAutoClipboard ? 'bg-blue-600' : 'bg-zinc-600'), onClick: function() { upd('btAutoClipboard', !st.btAutoClipboard); } },
+              h('div', { className: 'absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all duration-150 ' + (st.btAutoClipboard ? 'right-0.5' : 'left-0.5') }))),
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-1' }, '\uc54c\ub9bc \uc9c0\uc18d \uc2dc\uac04'),
+            h('select', { className: S.select, value: String(st.btNotifDuration), onChange: function(e) { upd('btNotifDuration', parseInt(e.target.value)); } },
+              h('option', { value: '2' }, '2\ucd08'), h('option', { value: '3' }, '3\ucd08'), h('option', { value: '5' }, '5\ucd08'), h('option', { value: '8' }, '8\ucd08'))),
+          h('div', null, h('label', { className: 'text-xs text-zinc-400 block mb-2' }, '\uac10\uc9c0 \ubbfc\uac10\ub3c4'),
+            h(SegCtrl, { options: [{ value: 'low', label: '\ub0ae\uc74c' }, { value: 'medium', label: '\uc911\uac04' }, { value: 'high', label: '\ub192\uc74c' }], value: st.btSensitivity, onChange: function(v) { upd('btSensitivity', v); } }))
+        )
+      )
+    )
+  );
+}
+
+function SettingsSidebar(props) {
+  var st = props.state || {};
+  function scrollTo(id) { var el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: 'smooth' }); }
+  return h('div', null,
+    h(SbSection, { title: '\ubc14\ub85c\uac00\uae30', first: true },
+      h('div', { className: 'space-y-1' },
+        h('button', { className: S.btnGhost + ' w-full text-left flex items-center gap-2', onClick: function() { scrollTo('settings-ocr'); } },
+          h(IGrid, { size: 14 }), '\ud074\ub77c\uc6b0\ub4dc OCR'),
+        h('button', { className: S.btnGhost + ' w-full text-left flex items-center gap-2', onClick: function() { scrollTo('settings-capture'); } },
+          h(ICamera, { size: 14 }), '\ucea1\ucc98'),
+        h('button', { className: S.btnGhost + ' w-full text-left flex items-center gap-2', onClick: function() { scrollTo('settings-blocktext'); } },
+          h(IClipboard, { size: 14 }), '\ube14\ub85d \ud14d\uc2a4\ud2b8')
+      )
+    ),
+    h(SbSection, { title: '\uc815\ubcf4' },
+      h('div', { className: 'text-xs text-zinc-500 space-y-1' },
+        h('p', null, 'ScrollSnap v' + APP_VERSION),
+        h('p', null, '\uc124\uc815 \ubcc0\uacbd\uc0ac\ud56d\uc740 \uc989\uc2dc \uc801\uc6a9\ub429\ub2c8\ub2e4.'),
+        st.keyStorage && st.keyStorage !== 'none'
+          ? h('p', { className: 'text-amber-400/80' }, '\ud0a4\uac00 ' + (st.keyStorage === 'local' ? 'localStorage' : 'sessionStorage') + '\uc5d0 \uc800\uc7a5\ub429\ub2c8\ub2e4.')
+          : h('p', null, '\ud0a4\ub294 \ud604\uc7ac \uc138\uc158 \uba54\ubaa8\ub9ac\uc5d0\ub9cc \uc800\uc7a5\ub429\ub2c8\ub2e4.')
+      )
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TopBar
+   ═══════════════════════════════════════════════════════════════ */
+
+var TABS = [
+  { mode: MODES.BT,  label: '\uBE14\uB85D \uD14D\uC2A4\uD2B8', icon: IClipboard },
+  { mode: MODES.SC,  label: '\uC2A4\uD06C\uB864 \uCEA1\uCC98', icon: ICamera },
+  { mode: MODES.FR,  label: '\uD30C\uC77C \uC218\uC2E0',   icon: IDownload },
+];
+
+function TopBar(props) {
+  var isSettings = props.mode === MODES.SET;
+  return h('nav', { className: S.topBar, 'aria-label': '\uBAA8\uB4DC \uD0D0\uC0C9' },
+    h('div', { className: 'flex items-center gap-2 mr-4 flex-shrink-0' },
+      h(ICamera, { size: 22, className: 'text-blue-500' }),
+      h('span', { className: 'text-lg font-semibold text-zinc-100' }, 'ScrollSnap')
+    ),
+    h('div', { className: S.tabContainer + ' flex-shrink-0', role: 'tablist', 'aria-label': '\uBAA8\uB4DC \uC120\uD0DD' },
+      TABS.map(function(tab) {
+        var active = props.mode === tab.mode;
+        return h('button', {
+          key: tab.mode,
+          className: active ? S.tabActive : S.tabInactive,
+          role: 'tab',
+          'aria-selected': active ? 'true' : 'false',
+          onClick: function() { props.dispatch({ type: 'SET_MODE', v: tab.mode }); },
+        },
+          h(tab.icon, { size: 14 }),
+          tab.label
+        );
+      })
+    ),
+    // Settings icon — right-aligned
+    h('div', { className: 'ml-auto flex-shrink-0' },
+      h('button', {
+        className: 'p-2 rounded-lg transition-colors duration-150 ' + (isSettings ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50'),
+        role: 'tab',
+        'aria-selected': isSettings ? 'true' : 'false',
+        'aria-label': '\uC124\uC815',
+        title: '\uC124\uC815',
+        onClick: function() { props.dispatch({ type: 'SET_MODE', v: MODES.SET }); },
+      }, h(IGear, { size: 18 }))
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   StatusBar
+   ═══════════════════════════════════════════════════════════════ */
+
+var PHASE_LABELS = {
+  IDLE: '\uC7A5\uCE58 \uB300\uAE30 \uC911', READY: '\uC900\uBE44\uB428', CAPTURING: '\uCEA1\uCC98 \uC911',
+  ASSEMBLING: '\uC870\uB9BD \uC911', RESULT: '\uC644\uB8CC', OCR_PROCESSING: 'OCR \uCC98\uB9AC \uC911', OCR_RESULT: 'OCR \uC644\uB8CC',
+  SETUP: '\uC124\uC815 \uC911', STANDBY: '\uC218\uC2E0 \uB300\uAE30 \uC911', CALIBRATE: '\uCE98\uB9AC\uBE0C\uB808\uC774\uC158',
+  RECEIVING: '\uC218\uC2E0 \uC911', COMPLETE: '\uC804\uC1A1 \uC644\uB8CC',
+  MONITORING: '\uAC10\uC9C0 \uC911', PROCESSING: '\uCC98\uB9AC \uC911', SETTINGS: '\uC124\uC815',
+};
+
+function getPhase(st) {
+  switch (st.mode) {
+    case MODES.SC:  return st.scrollCapture.phase;
+    case MODES.FR:  return st.fileReceive.phase;
+    case MODES.BT:  return st.blockText.phase;
+    case MODES.SET: return 'SETTINGS';
+    default: return '';
+  }
+}
+
+function StatusBar(props) {
+  var st = props.state;
+  var phase = getPhase(st);
+  var dev = st.device;
+  var isOcrMode = (st.mode === MODES.SC && (phase === 'OCR_PROCESSING' || phase === 'OCR_RESULT' || phase === 'RESULT')) || st.mode === MODES.BT;
+  var isSC = st.mode === MODES.SC;
+  var isFR = st.mode === MODES.FR;
+  var sep = h('span', { className: 'text-zinc-700' }, '|');
+
+  // Dynamic label
+  var label;
+  if (isSC && phase === 'CAPTURING') {
+    label = '\ucea1\ucc98 \uc911 (' + st.scrollCapture.frameCount + ' \ud504\ub808\uc784)';
+  } else if (isSC && phase === 'ASSEMBLING') {
+    label = '\uc870\ub9bd \uc911 (' + (st.scrollCapture.assembleProgress || 0) + '%)';
+  } else if (isSC && (phase === 'RESULT' || phase === 'OCR_RESULT')) {
+    label = phase === 'OCR_RESULT' ? 'OCR \uC644\uB8CC' : '\uC644\uB8CC';
+  } else if (isFR && phase === 'RECEIVING') {
+    label = '\uc218\uc2e0 \uc911 (' + st.fileReceive.collectedCount + '/' + st.fileReceive.totalFrames + ')';
+  } else if (isFR && phase === 'COMPLETE') {
+    var frSz = st.fileReceive.fileSizeKB >= 1024 ? (st.fileReceive.fileSizeKB / 1024).toFixed(1) + ' MB' : st.fileReceive.fileSizeKB.toFixed(1) + ' KB';
+    label = '전송 완료  |  ' + frSz + '  |  ' + fmtTime(st.fileReceive.elapsedSec);
+  } else if (st.mode === MODES.BT && phase === 'MONITORING') {
+    var btSt = st.blockText.detectStatus;
+    label = '감지 중' + (btSt === 'detected' ? '  |  화면 변화 감지' : btSt === 'stabilizing' ? '  |  선택 영역 감지됨' : '');
+  } else if (st.mode === MODES.BT && phase === 'PROCESSING') {
+    label = 'OCR \ucc98\ub9ac \uc911' + (st.blockText.ocrProgress > 0 ? ' (' + st.blockText.ocrProgress + '%)' : '');
+  } else {
+    label = PHASE_LABELS[phase] || phase;
+  }
+
+  // File receive extra info in status bar
+  var frExtra = null;
+  if (isFR && phase === 'RECEIVING') {
+    frExtra = h(Fragment, null,
+      sep,
+      h('span', null, st.fileReceive.speedKBs.toFixed(1) + ' KB/s'),
+      sep,
+      h('span', null, '\ub8e8\ud504 ' + st.fileReceive.loopCount),
+      st.fileReceive.speedKBs > 0 ? h(Fragment, null,
+        sep,
+        h('span', null, '~' + fmtTime(Math.round((st.fileReceive.totalFrames - st.fileReceive.collectedCount) * VisualDecoder.BYTES_PER_FRAME / 1024 / st.fileReceive.speedKBs)) + ' \ub0a8\uc74c')
+      ) : null
+    );
+  }
+
+  var phaseColor = (phase === 'CAPTURING' || phase === 'RECEIVING' || phase === 'MONITORING') ? 'text-red-400' : 'text-zinc-400';
+
+  return h('footer', { className: S.statusBar, role: 'status', 'aria-live': 'polite' },
+    h('span', { className: phaseColor }, label),
+    sep,
+    h('span', null, '\uc7a5\uce58: ', dev.connected ? h('span', { className: 'text-zinc-300' }, dev.name) : '\ubbf8\uc5f0\uacb0'),
+    sep,
+    h('span', null, '\ud574\uc0c1\ub3c4: ', dev.resolution ? h('span', { className: 'text-zinc-300' }, dev.resolution) : '--'),
+    sep,
+    isOcrMode
+      ? h('span', null, 'OCR: ',
+          h('span', { className: 'text-zinc-300' },
+            OCR_LABELS[st.mode === MODES.SC ? st.scrollCapture.ocrMethod : (st.mode === MODES.BT ? st.blockText.ocrMethod : 'tesseract')] || '--'
+          ))
+      : h('span', null, 'FPS: ', dev.fps ? h('span', { className: 'text-zinc-300' }, String(dev.fps)) : '--'),
+    frExtra,
+    sep,
+    h('span', { className: 'text-zinc-600' }, 'v' + APP_VERSION)
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Content & Sidebar Switches
+   ═══════════════════════════════════════════════════════════════ */
+
+function MainContent(props) {
+  var st = props.state;
+  var dp = { stream: props.stream, resolution: st.device.resolution, fps: st.device.fps, deviceConnected: st.device.connected, videoRef: props.videoRef, needsPermission: st.device.needsPermission, permissionDenied: st.device.permissionDenied, onRequestPermission: props.onRequestPermission };
+  var content;
+  switch (st.mode) {
+    case MODES.SC:  content = h(ScrollCaptureMain, Object.assign({ state: st.scrollCapture, dispatch: props.dispatch, onCopyText: props.onCopyText, onDownloadText: props.onDownloadText }, dp)); break;
+    case MODES.FR:  content = h(FileReceiveMain,   Object.assign({ state: st.fileReceive, dispatch: props.dispatch }, dp)); break;
+    case MODES.BT:  content = h(BlockTextMain,     Object.assign({ state: st.blockText, settings: st.settings }, dp)); break;
+    case MODES.SET: content = h(SettingsMain, { state: st.settings, dispatch: props.dispatch }); break;
+    default: content = null;
+  }
+  return h('div', { className: S.mainContent }, content);
+}
+
+function SidebarSwitch(props) {
+  var st = props.state;
+  var d = props.dispatch;
+  var devP = { devices: st.device.devices, selectedDeviceId: st.device.selectedDeviceId, deviceConnected: st.device.connected, dispatch: d };
+  var capP = { onStartCapture: props.onStartCapture, onStopCapture: props.onStopCapture, onCancelAssemble: props.onCancelAssemble };
+  var content;
+  switch (st.mode) {
+    case MODES.SC:  content = h(ScrollCaptureSidebar, Object.assign({ state: st.scrollCapture, settings: st.settings }, devP, capP, { onStartOcr: props.onStartOcr, onCancelOcr: props.onCancelOcr, onCopyText: props.onCopyText, onDownloadText: props.onDownloadText })); break;
+    case MODES.FR:  content = h(FileReceiveSidebar,   Object.assign({ state: st.fileReceive }, devP, { onStartReceive: props.onStartReceive, onStopReceive: props.onStopReceive, onDownloadFile: props.onDownloadFile, onNewReceive: props.onNewReceive })); break;
+    case MODES.BT:  content = h(BlockTextSidebar,     Object.assign({ state: st.blockText, settings: st.settings }, devP, { onStartBlockText: props.onStartBlockText, onStopBlockText: props.onStopBlockText, onClearHistory: props.onClearHistory })); break;
+    case MODES.SET: content = h(SettingsSidebar, { state: st.settings, dispatch: props.dispatch }); break;
+    default: content = null;
+  }
+  return h('div', { className: S.sidebar }, content);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Viewport Guard
+   ═══════════════════════════════════════════════════════════════ */
+
+function ViewportGuard(props) {
+  var ref = useState(window.innerWidth < 1024);
+  var tooSmall = ref[0];
+  var setTooSmall = ref[1];
+
+  useEffect(function() {
+    function check() { setTooSmall(window.innerWidth < 1024); }
+    window.addEventListener('resize', check);
+    return function() { window.removeEventListener('resize', check); };
+  }, []);
+
+  if (tooSmall) {
+    return h('div', { className: 'h-full flex flex-col items-center justify-center gap-4 p-8 bg-zinc-900' },
+      h(IMonitor, { size: 64, className: 'text-zinc-600' }),
+      h('h1', { className: 'text-xl font-medium text-zinc-300' }, '데스크톱 브라우저에서 사용해 주세요'),
+      h('p', { className: 'text-sm text-zinc-500 text-center max-w-sm' },
+        'ScrollSnap은 1024px 이상의 데스크톱 환경에서 사용할 수 있습니다.'
+      )
+    );
+  }
+  return props.children;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   App — Device Management
+   ═══════════════════════════════════════════════════════════════ */
+
+function App() {
+  var ref = useReducer(reducer, INIT_STATE);
+  var state = ref[0];
+  var dispatch = ref[1];
+  var streamRef = useRef(null);
+  var streamState = useState(null);
+  var stream = streamState[0];
+  var setStream = streamState[1];
+
+  // Toast notification state
+  var toastState = useState([]);
+  var toasts = toastState[0];
+  var setToasts = toastState[1];
+  var toastIdRef = useRef(0);
+
+  function addToast(type, message, title) {
+    toastIdRef.current++;
+    var id = toastIdRef.current;
+    var duration = (state.settings.btNotifDuration || 3) * 1000;
+    setToasts(function(prev) { return [{ id: id, type: type, message: message, title: title || null }].concat(prev).slice(0, 3); });
+    setTimeout(function() { setToasts(function(prev) { return prev.filter(function(t) { return t.id !== id; }); }); }, duration);
+  }
+
+  function dismissToast(id) {
+    setToasts(function(prev) { return prev.filter(function(t) { return t.id !== id; }); });
+  }
+
+  // Capture pipeline refs
+  var videoRef = useRef(null);
+  var captureRef = useRef({
+    active: false,
+    canvas: null,
+    ctx: null,
+    prevGray: null,
+    strips: [],
+    chunks: [],
+    frameCount: 0,
+    consecutiveFails: 0,
+    startTime: 0,
+    timerId: null,
+    sampleIntervalId: null,
+    BLOB_THRESHOLD: 100, // strips before blob offload
+    MAX_FRAMES: 2000,
+    MEMORY_AUTO_STOP: 1500, // MB
+  });
+
+  // Effect 1: Enumerate video devices (poll every 2s + devicechange)
+  var permissionRequested = useRef(false);
+  useEffect(function() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    var active = true;
+
+    function enumerate() {
+      navigator.mediaDevices.enumerateDevices().then(function(allDevices) {
+        if (!active) return;
+        var videoDevices = allDevices.filter(function(d) { return d.kind === 'videoinput'; });
+        // Detect macOS/privacy scenario: devices exist but have empty deviceId
+        var hasEmptyIds = videoDevices.length > 0 && videoDevices.every(function(d) { return !d.deviceId; });
+        if (hasEmptyIds && !permissionRequested.current) {
+          // Devices detected but no IDs — need camera permission first
+          dispatch({ type: 'DEVICE', v: { needsPermission: true } });
+          return;
+        }
+        var list = videoDevices.map(function(d, i) {
+          return { deviceId: d.deviceId, label: d.label || '\uCEA1\uCC98\uCE74\uB4DC #' + (i + 1) };
+        });
+        dispatch({ type: 'SET_DEVICES', v: list });
+        if (list.length > 0) {
+          dispatch({ type: 'DEVICE', v: { needsPermission: false, permissionDenied: false } });
+        }
+      });
+    }
+
+    enumerate();
+    var interval = setInterval(enumerate, 2000);
+
+    var handler = function() { enumerate(); };
+    if (navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', handler);
+    }
+
+    return function() {
+      active = false;
+      clearInterval(interval);
+      if (navigator.mediaDevices.removeEventListener) {
+        navigator.mediaDevices.removeEventListener('devicechange', handler);
+      }
+    };
+  }, []);
+
+  // Camera permission request (macOS / privacy browsers)
+  function requestCameraPermission() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    permissionRequested.current = true;
+    navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(function(tempStream) {
+      // Permission granted — stop temp stream, re-enumerate with real deviceIds
+      tempStream.getTracks().forEach(function(t) { t.stop(); });
+      dispatch({ type: 'DEVICE', v: { needsPermission: false, permissionDenied: false } });
+      // Re-enumerate to get real deviceIds
+      navigator.mediaDevices.enumerateDevices().then(function(allDevices) {
+        var videoDevices = allDevices.filter(function(d) { return d.kind === 'videoinput'; });
+        var list = videoDevices.map(function(d, i) {
+          return { deviceId: d.deviceId, label: d.label || '\uCEA1\uCC98\uCE74\uB4DC #' + (i + 1) };
+        });
+        dispatch({ type: 'SET_DEVICES', v: list });
+      });
+    }).catch(function(err) {
+      console.warn('Camera permission denied:', err.name, err.message);
+      dispatch({ type: 'DEVICE', v: { needsPermission: false, permissionDenied: true } });
+      addToast('error', err.name === 'NotAllowedError' ? '\uCE74\uBA54\uB77C \uC811\uADFC \uAD8C\uD55C\uC774 \uAC70\uBD80\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uBE0C\uB77C\uC6B0\uC800 \uC124\uC815\uC5D0\uC11C \uCE74\uBA54\uB77C \uAD8C\uD55C\uC744 \uD5C8\uC6A9\uD574 \uC8FC\uC138\uC694.' : '\uCE74\uBA54\uB77C \uC811\uADFC \uC2E4\uD328: ' + err.message);
+    });
+  }
+  // Effect 2: Get media stream when device selected
+  useEffect(function() {
+    var deviceId = state.device.selectedDeviceId;
+    if (!deviceId) {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(function(t) { t.stop(); });
+        streamRef.current = null;
+        setStream(null);
+      }
+      dispatch({ type: 'DEVICE', v: { connected: false, name: null, resolution: null, fps: null } });
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    var active = true;
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(function(t) { t.stop(); });
+      streamRef.current = null;
+      setStream(null);
+    }
+
+    navigator.mediaDevices.getUserMedia({
+      video: {
+        deviceId: { exact: deviceId },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 },
+      },
+    }).then(function(newStream) {
+      if (!active) {
+        newStream.getTracks().forEach(function(t) { t.stop(); });
+        return;
+      }
+      streamRef.current = newStream;
+      setStream(newStream);
+
+      var track = newStream.getVideoTracks()[0];
+      var settings = track.getSettings();
+      var name = track.label || '\uCEA1\uCC98\uCE74\uB4DC';
+
+      dispatch({ type: 'DEVICE', v: {
+        connected: true,
+        name: name,
+        resolution: (settings.width || '?') + 'x' + (settings.height || '?'),
+        fps: settings.frameRate ? Math.round(settings.frameRate) : null,
+      }});
+      dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
+
+      track.onended = function() {
+        if (!active) return;
+        streamRef.current = null;
+        setStream(null);
+        dispatch({ type: 'DEVICE', v: { connected: false, name: null, resolution: null, fps: null, selectedDeviceId: null } });
+        dispatch({ type: 'SC_UPDATE', v: { phase: 'IDLE' } });
+      };
+    }).catch(function(err) {
+      if (!active) return;
+      console.warn('getUserMedia failed:', err.name, err.message);
+      dispatch({ type: 'DEVICE', v: { connected: false, name: null, resolution: null, fps: null } });
+    });
+
+    return function() {
+      active = false;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(function(t) { t.stop(); });
+        streamRef.current = null;
+        setStream(null);
+      }
+    };
+  }, [state.device.selectedDeviceId]);
+
+  // Effect 3: Load settings from storage on mount
+  useEffect(function() {
+    try {
+      var saved = localStorage.getItem('scrollsnap_settings');
+      if (!saved) saved = sessionStorage.getItem('scrollsnap_settings');
+      if (saved) dispatch({ type: 'SET_UPDATE', v: JSON.parse(saved) });
+    } catch(e) {}
+  }, []);
+
+  // Effect 4: Save settings to storage on change
+  useEffect(function() {
+    var s = state.settings;
+    try {
+      if (s.keyStorage === 'local') {
+        localStorage.setItem('scrollsnap_settings', JSON.stringify(s));
+        try { sessionStorage.removeItem('scrollsnap_settings'); } catch(e2) {}
+      } else if (s.keyStorage === 'session') {
+        sessionStorage.setItem('scrollsnap_settings', JSON.stringify(s));
+        try { localStorage.removeItem('scrollsnap_settings'); } catch(e2) {}
+      } else {
+        try { localStorage.removeItem('scrollsnap_settings'); } catch(e2) {}
+        try { sessionStorage.removeItem('scrollsnap_settings'); } catch(e2) {}
+      }
+    } catch(e) {}
+  });
+
+  // Effect 5: Load sidebar preferences from localStorage on mount
+  useEffect(function() {
+    try {
+      var saved = localStorage.getItem('scrollsnap_sidebar_prefs');
+      if (saved) {
+        var p = JSON.parse(saved);
+        if (p.mode) dispatch({ type: 'SET_MODE', v: p.mode });
+        if (p.sc) dispatch({ type: 'SC_UPDATE', v: p.sc });
+        if (p.bt) dispatch({ type: 'BT_UPDATE', v: p.bt });
+      }
+    } catch(e) {}
+  }, []);
+
+  // Effect 6: Save sidebar preferences to localStorage on change
+  useEffect(function() {
+    try {
+      var prefs = {
+        mode: state.mode,
+        sc: {
+          direction: state.scrollCapture.direction,
+          ocrMethod: state.scrollCapture.ocrMethod,
+          ocrTarget: state.scrollCapture.ocrTarget,
+          cropRect: state.scrollCapture.cropRect
+        },
+        bt: {
+          ocrMethod: state.blockText.ocrMethod,
+          stabilityThreshold: state.blockText.stabilityThreshold
+        }
+      };
+      localStorage.setItem('scrollsnap_sidebar_prefs', JSON.stringify(prefs));
+    } catch(e) {}
+  }, [state.mode, state.scrollCapture.direction, state.scrollCapture.ocrMethod, state.scrollCapture.ocrTarget, state.scrollCapture.cropRect, state.blockText.ocrMethod, state.blockText.stabilityThreshold]);
+
+  // --- Capture Pipeline Functions ---
+
+  function captureFrame() {
+    var cap = captureRef.current;
+    if (!cap.active) return;
+    var video = videoRef.current;
+    if (!video || video.readyState < 2) return;
+
+    // Initialize canvas on first frame
+    if (!cap.canvas) {
+      cap.canvas = document.createElement('canvas');
+      cap.canvas.width = video.videoWidth;
+      cap.canvas.height = video.videoHeight;
+      cap.ctx = cap.canvas.getContext('2d', { willReadFrequently: true });
+    }
+
+    var w = cap.canvas.width;
+    var h2 = cap.canvas.height;
+    cap.ctx.drawImage(video, 0, 0, w, h2);
+
+    // Determine crop region from cropRect (apply during capture, not just download)
+    var direction = state.scrollCapture.direction;
+    var isVert = direction !== 'horizontal';
+    var cropRect = state.scrollCapture.ocrTarget === 'manual' ? state.scrollCapture.cropRect : null;
+
+    var cx = 0, cy = 0, cw = w, ch = h2;
+    if (cropRect) {
+      // Apply ALL four crop dimensions regardless of scroll direction
+      // This excludes browser chrome (address bar, bookmarks, dock) from every frame
+      cx = Math.round(w * cropRect.x / 100);
+      cy = Math.round(h2 * cropRect.y / 100);
+      cw = Math.max(1, Math.round(w * cropRect.w / 100));
+      ch = Math.max(1, Math.round(h2 * cropRect.h / 100));
+    }
+
+    // Get frame data from the (possibly cropped) region
+    var imgData = cap.ctx.getImageData(cx, cy, cw, ch);
+    var currGray = CaptureEngine.toGrayHalf(imgData);
+
+    if (!cap.prevGray) {
+      // First frame: save the (possibly cropped) frame as the initial strip
+      cap.prevGray = currGray;
+      cap.strips.push(imgData);
+      cap.frameCount = 1;
+      cap.cropApplied = !!cropRect;
+      dispatch({ type: 'SC_UPDATE', v: { frameCount: 1, matchQuality: 1 } });
+      return;
+    }
+
+    // Static frame detection — skip silently when screen hasn't changed
+    var _sd = currGray.data, _pd = cap.prevGray.data;
+    var _sLen = Math.min(_sd.length, _pd.length);
+    var _step = Math.max(1, (_sLen / 200) | 0);
+    var _diff = 0, _sn = 0;
+    for (var _si = 0; _si < _sLen; _si += _step) { _diff += Math.abs(_sd[_si] - _pd[_si]); _sn++; }
+    if (_sn > 0 && _diff / _sn < 2) return;  // avg pixel diff < 2 = same frame, not a failure
+
+    // NCC matching on the (possibly cropped) frames
+    var result = CaptureEngine.nccMatch(cap.prevGray, currGray, direction);
+
+    if (result.confidence < 0.5 || result.deltaY <= 0) {
+      // Low confidence or no movement — skip
+      cap.consecutiveFails++;
+      dispatch({ type: 'SC_UPDATE', v: { consecutiveFails: cap.consecutiveFails, matchQuality: result.confidence } });
+      return;
+    }
+
+    // Extract new content strip from the (possibly cropped) region
+    var strip;
+    if (isVert) {
+      var stripH = Math.min(result.deltaY, ch);
+      if (stripH > 0) strip = cap.ctx.getImageData(cx, cy + ch - stripH, cw, stripH);
+    } else {
+      var stripW = Math.min(result.deltaY, cw);
+      if (stripW > 0) strip = cap.ctx.getImageData(cx + cw - stripW, cy, stripW, ch);
+    }
+
+    if (strip) {
+      cap.strips.push(strip);
+      cap.consecutiveFails = 0;
+      cap.frameCount++;
+
+      // Blob offloading: merge strips to blob when threshold reached
+      if (cap.strips.length >= cap.BLOB_THRESHOLD) {
+        var toMerge = cap.strips.slice();
+        cap.strips = [];
+        CaptureEngine.mergeStripsToBlob(toMerge, direction, function(chunk) {
+          if (chunk) {
+            cap.chunks.push(chunk);
+          }
+        });
+      }
+
+      // Memory check
+      var memBytes = CaptureEngine.estimateMemory(cap.strips, cap.chunks);
+      var memMB = Math.round(memBytes / (1024 * 1024));
+
+      dispatch({ type: 'SC_UPDATE', v: {
+        frameCount: cap.frameCount,
+        matchQuality: result.confidence,
+        consecutiveFails: 0,
+        memoryMB: memMB,
+      }});
+
+      // Auto-stop on memory limit or frame limit
+      if (memMB >= cap.MEMORY_AUTO_STOP || cap.frameCount >= cap.MAX_FRAMES) {
+        stopCapture();
+        return;
+      }
+    }
+
+    cap.prevGray = currGray;
+  }
+
+  function startCapture() {
+    var cap = captureRef.current;
+    cap.active = true;
+    cap.canvas = null;
+    cap.ctx = null;
+    cap.prevGray = null;
+    cap.strips = [];
+    cap.chunks = [];
+    cap.frameCount = 0;
+    cap.consecutiveFails = 0;
+    cap.startTime = Date.now();
+    cap.cropApplied = false;
+
+    dispatch({ type: 'SC_UPDATE', v: {
+      phase: 'CAPTURING',
+      elapsedSec: 0,
+      frameCount: 0,
+      matchQuality: 0,
+      consecutiveFails: 0,
+      memoryMB: 0,
+      chainLength: 0,
+      excludedFrames: 0,
+      assembleProgress: 0,
+      resultCanvas: null,
+    }});
+
+    // Set video element srcObject for CAPTURING view
+    setTimeout(function() {
+      var el = videoRef.current;
+      if (el && streamRef.current) {
+        el.srcObject = streamRef.current;
+      }
+    }, 50);
+
+    // Timer: update elapsed time every second
+    cap.timerId = setInterval(function() {
+      if (!cap.active) return;
+      var elapsed = Math.floor((Date.now() - cap.startTime) / 1000);
+      dispatch({ type: 'SC_UPDATE', v: { elapsedSec: elapsed } });
+    }, 1000);
+
+    // Sample frames at ~10fps
+    cap.sampleIntervalId = setInterval(function() {
+      captureFrame();
+    }, 100);
+  }
+
+  function stopCapture() {
+    var cap = captureRef.current;
+    cap.active = false;
+    if (cap.timerId) { clearInterval(cap.timerId); cap.timerId = null; }
+    if (cap.sampleIntervalId) { clearInterval(cap.sampleIntervalId); cap.sampleIntervalId = null; }
+
+    var totalFrames = cap.frameCount;
+    var direction = state.scrollCapture.direction;
+
+    dispatch({ type: 'SC_UPDATE', v: { phase: 'ASSEMBLING', assembleProgress: 0 } });
+
+    // Assemble final image
+    CaptureEngine.assembleFinal(
+      cap.chunks,
+      cap.strips,
+      direction,
+      function onProgress(pct) {
+        dispatch({ type: 'SC_UPDATE', v: { assembleProgress: pct } });
+      },
+      function onComplete(result) {
+        if (!result) {
+          dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
+          return;
+        }
+        var chainLen = totalFrames;
+        var excluded = 0; // simplified — future: track chain breaks
+
+        // Estimate file sizes
+        var pngKB = Math.round(result.width * result.height * 0.3 / 1024); // rough estimate
+        var jpegKB = Math.round(pngKB * 0.4);
+
+        dispatch({ type: 'SC_UPDATE', v: {
+          phase: 'RESULT',
+          resultCanvas: result.canvas,
+          resultWidth: result.width,
+          resultHeight: result.height,
+          chainLength: chainLen,
+          excludedFrames: excluded,
+          assembleProgress: 100,
+          pngSizeKB: pngKB,
+          jpegSizeKB: jpegKB,
+        }});
+
+        // Cleanup engine state
+        cap.strips = [];
+        cap.chunks = [];
+        cap.prevGray = null;
+      }
+    );
+  }
+
+  function cancelAssemble() {
+    dispatch({ type: 'SC_UPDATE', v: { phase: 'READY', assembleProgress: 0 } });
+  }
+
+  // --- File Receive Pipeline ---
+  var receiveRef = useRef({
+    active: false, phase: 'SETUP', canvas: null, ctx: null, gridBounds: null,
+    palette: VisualDecoder.DEFAULT_PALETTE.slice(),
+    framesMap: {}, totalFrames: 0, fileHash: 0,
+    consecutiveMagic: 0, calibrationSamples: [], calibrationFrames: 0,
+    totalProcessed: 0, totalValid: 0, collectedCount: 0, loopCount: 0,
+    startTime: 0, timerId: null, sampleIntervalId: null,
+    lastFrameNum: -1, prevFrameNum: -1, speedHistory: [],
+  });
+
+  function processReceiveFrame() {
+    var rcv = receiveRef.current;
+    var video = videoRef.current;
+    console.log('[FR]', 'active=' + rcv.active, 'video=' + (video ? 'yes(rs=' + video.readyState + ')' : 'NULL'), 'phase=' + rcv.phase);
+    if (!rcv.active) return;
+    if (!video || video.readyState < 2) return;
+
+    if (!rcv.canvas) {
+      rcv.canvas = document.createElement('canvas');
+      rcv.canvas.width = video.videoWidth;
+      rcv.canvas.height = video.videoHeight;
+      rcv.ctx = rcv.canvas.getContext('2d', { willReadFrequently: true });
+    }
+
+    var w = rcv.canvas.width;
+    var h2 = rcv.canvas.height;
+    rcv.ctx.drawImage(video, 0, 0, w, h2);
+    var imgData = rcv.ctx.getImageData(0, 0, w, h2);
+    var fr = { phase: rcv.phase };
+
+    // STANDBY: detect grid bounds + scan for magic bytes
+    if (fr.phase === 'STANDBY') {
+      // Auto-detect grid position on each frame until found
+      if (!rcv.gridBounds) {
+        rcv.gridBounds = VisualDecoder.detectGridBounds(imgData);
+        if (rcv.gridBounds) { console.log('[FR] Grid detected:', JSON.stringify(rcv.gridBounds)); }
+      }
+      var result = VisualDecoder.decodeFrame(imgData, rcv.palette, rcv.gridBounds);
+      if (result) { console.log('[FR] header:', JSON.stringify(result.header)); }
+      if (result && VisualDecoder.isValidHeader(result.header)) {
+        rcv.consecutiveMagic++;
+        dispatch({ type: 'FR_UPDATE', v: { consecutiveMagic: rcv.consecutiveMagic } });
+        if (rcv.consecutiveMagic >= 3) {
+          rcv.consecutiveMagic = 0;
+          rcv.calibrationSamples = [];
+          rcv.calibrationFrames = 0;
+          rcv.phase = 'CALIBRATE';
+          dispatch({ type: 'FR_UPDATE', v: { phase: 'CALIBRATE', calibrationStep: 1, consecutiveMagic: 0, totalProcessed: 0 } });
+        }
+      } else {
+        rcv.consecutiveMagic = 0;
+        dispatch({ type: 'FR_UPDATE', v: { consecutiveMagic: 0 } });
+      }
+      return;
+    }
+
+    // CALIBRATE: collect samples for K-means
+    if (fr.phase === 'CALIBRATE') {
+      var calResult = VisualDecoder.decodeFrame(imgData, rcv.palette, rcv.gridBounds);
+      if (calResult) {
+        for (var ci = 0; ci < calResult.rawRGBs.length; ci++) {
+          rcv.calibrationSamples.push(calResult.rawRGBs[ci]);
+        }
+        rcv.calibrationFrames++;
+        dispatch({ type: 'FR_UPDATE', v: { totalProcessed: rcv.calibrationFrames, calibrationStep: 1 } });
+        if (rcv.calibrationFrames >= 10) {
+          var learned = VisualDecoder.kmeansCalibrate(rcv.calibrationSamples);
+          if (learned) {
+            rcv.palette = learned;
+            dispatch({ type: 'FR_UPDATE', v: { palette: learned, calibrationStep: 2 } });
+          }
+          var checkResult = VisualDecoder.decodeFrame(imgData, rcv.palette, rcv.gridBounds);
+          if (checkResult && VisualDecoder.isValidHeader(checkResult.header)) {
+            rcv.totalFrames = checkResult.header.totalFrames;
+            rcv.fileHash = checkResult.header.fileHash;
+            rcv.totalProcessed = 0; rcv.totalValid = 0; rcv.collectedCount = 0;
+            rcv.loopCount = 1; rcv.prevFrameNum = -1; rcv.lastFrameNum = -1;
+            rcv.speedHistory = []; rcv.framesMap = {};
+            rcv.phase = 'RECEIVING';
+            dispatch({ type: 'FR_UPDATE', v: {
+              phase: 'RECEIVING', totalFrames: rcv.totalFrames,
+              collectedCount: 0, loopCount: 1, totalProcessed: 0, totalValid: 0,
+              validRate: 0, speedKBs: 0, framesMap: {}, lastFrameNum: -1,
+            } });
+            if (!rcv.framesMap[checkResult.header.frameNum]) {
+              rcv.framesMap[checkResult.header.frameNum] = checkResult.data;
+              rcv.collectedCount = 1; rcv.totalValid = 1;
+              dispatch({ type: 'FR_UPDATE', v: { collectedCount: 1, totalValid: 1, lastFrameNum: checkResult.header.frameNum, framesMap: Object.assign({}, rcv.framesMap) } });
+              if (rcv.collectedCount >= rcv.totalFrames) { completeReceive(); return; }
+            }
+          } else {
+            rcv.calibrationFrames = 5;
+          }
+        }
+      }
+      return;
+    }
+
+    // RECEIVING: decode and accumulate
+    if (fr.phase === 'RECEIVING') {
+      var decResult = VisualDecoder.decodeFrame(imgData, rcv.palette, rcv.gridBounds);
+      rcv.totalProcessed++;
+      if (decResult && VisualDecoder.isValidHeader(decResult.header) &&
+          decResult.header.totalFrames === rcv.totalFrames &&
+          decResult.header.fileHash === rcv.fileHash) {
+        rcv.totalValid++;
+        rcv.lastFrameNum = decResult.header.frameNum;
+        if (rcv.prevFrameNum >= 0 && decResult.header.frameNum < rcv.prevFrameNum) {
+          rcv.loopCount++;
+        }
+        rcv.prevFrameNum = decResult.header.frameNum;
+        if (!rcv.framesMap[decResult.header.frameNum]) {
+          rcv.framesMap[decResult.header.frameNum] = decResult.data;
+          rcv.collectedCount++;
+          var now = Date.now();
+          rcv.speedHistory.push({ t: now, bytes: VisualDecoder.BYTES_PER_FRAME });
+          var cutoff = now - 5000;
+          rcv.speedHistory = rcv.speedHistory.filter(function(e) { return e.t >= cutoff; });
+          var totB = 0;
+          for (var si = 0; si < rcv.speedHistory.length; si++) totB += rcv.speedHistory[si].bytes;
+          var spElapsed = rcv.speedHistory.length > 1 ? (now - rcv.speedHistory[0].t) / 1000 : 1;
+          var speedKBs = spElapsed > 0 ? (totB / 1024 / spElapsed) : 0;
+          var vr = rcv.totalProcessed > 0 ? Math.round(rcv.totalValid / rcv.totalProcessed * 100) : 0;
+          dispatch({ type: 'FR_UPDATE', v: {
+            collectedCount: rcv.collectedCount, loopCount: rcv.loopCount,
+            totalProcessed: rcv.totalProcessed, totalValid: rcv.totalValid,
+            validRate: vr, speedKBs: speedKBs,
+            lastFrameNum: decResult.header.frameNum,
+            framesMap: Object.assign({}, rcv.framesMap),
+          } });
+          if (rcv.collectedCount >= rcv.totalFrames) { completeReceive(); }
+        } else {
+          var vr2 = rcv.totalProcessed > 0 ? Math.round(rcv.totalValid / rcv.totalProcessed * 100) : 0;
+          dispatch({ type: 'FR_UPDATE', v: {
+            totalProcessed: rcv.totalProcessed, totalValid: rcv.totalValid,
+            validRate: vr2, loopCount: rcv.loopCount, lastFrameNum: decResult.header.frameNum,
+          } });
+        }
+      } else {
+        var vr3 = rcv.totalProcessed > 0 ? Math.round(rcv.totalValid / rcv.totalProcessed * 100) : 0;
+        dispatch({ type: 'FR_UPDATE', v: { totalProcessed: rcv.totalProcessed, validRate: vr3 } });
+      }
+    }
+  }
+
+  function completeReceive() {
+    var rcv = receiveRef.current;
+    rcv.active = false;
+    if (rcv.timerId) { clearInterval(rcv.timerId); rcv.timerId = null; }
+    if (rcv.sampleIntervalId) { clearInterval(rcv.sampleIntervalId); rcv.sampleIntervalId = null; }
+    var rawData = VisualDecoder.reconstructFile(rcv.framesMap, rcv.totalFrames);
+    if (!rawData) {
+      dispatch({ type: 'FR_UPDATE', v: { errorMsg: 'File reconstruction failed' } });
+      return;
+    }
+    // Parse filename header: [1 byte length N][N bytes filename UTF-8][file data]
+    var fileName = null;
+    var fileData = rawData;
+    if (rawData.length > 1) {
+      var fnLen = rawData[0];
+      if (fnLen > 0 && fnLen < 200 && rawData.length > 1 + fnLen) {
+        try {
+          fileName = new TextDecoder().decode(rawData.slice(1, 1 + fnLen));
+          fileData = rawData.slice(1 + fnLen);
+        } catch(e) { /* fallback: treat entire data as file */ }
+      }
+    }
+    var fileSizeKB = fileData.length / 1024;
+    rcv.phase = 'COMPLETE';
+    dispatch({ type: 'FR_UPDATE', v: {
+      phase: 'COMPLETE', fileData: fileData, fileName: fileName, fileSizeKB: fileSizeKB,
+    } });
+  }
+
+  function startReceive() {
+    var rcv = receiveRef.current;
+    rcv.active = true; rcv.canvas = null; rcv.ctx = null; rcv.gridBounds = null;
+    rcv.palette = VisualDecoder.DEFAULT_PALETTE.slice();
+    rcv.framesMap = {}; rcv.totalFrames = 0; rcv.fileHash = 0;
+    rcv.consecutiveMagic = 0; rcv.calibrationSamples = []; rcv.calibrationFrames = 0;
+    rcv.totalProcessed = 0; rcv.totalValid = 0; rcv.collectedCount = 0;
+    rcv.loopCount = 0; rcv.startTime = Date.now();
+    rcv.lastFrameNum = -1; rcv.prevFrameNum = -1; rcv.speedHistory = [];
+    rcv.phase = 'STANDBY';
+    dispatch({ type: 'FR_UPDATE', v: {
+      phase: 'STANDBY', totalFrames: 0, collectedCount: 0, framesMap: {},
+      loopCount: 0, elapsedSec: 0, validRate: 0, speedKBs: 0,
+      calibrationStep: 0, palette: null, fileData: null, fileName: null,
+      fileSizeKB: 0, consecutiveMagic: 0, totalProcessed: 0, totalValid: 0,
+      lastFrameNum: -1, errorMsg: null,
+    } });
+    setTimeout(function() {
+      var el = videoRef.current;
+      if (el && streamRef.current) { el.srcObject = streamRef.current; }
+    }, 50);
+    rcv.timerId = setInterval(function() {
+      if (!rcv.active) return;
+      var elapsed = Math.floor((Date.now() - rcv.startTime) / 1000);
+      dispatch({ type: 'FR_UPDATE', v: { elapsedSec: elapsed } });
+    }, 1000);
+    rcv.sampleIntervalId = setInterval(function() { processReceiveFrame(); }, 250);
+  }
+
+  function stopReceive() {
+    var rcv = receiveRef.current;
+    rcv.active = false;
+    if (rcv.timerId) { clearInterval(rcv.timerId); rcv.timerId = null; }
+    if (rcv.sampleIntervalId) { clearInterval(rcv.sampleIntervalId); rcv.sampleIntervalId = null; }
+    rcv.phase = 'SETUP';
+    dispatch({ type: 'FR_UPDATE', v: { phase: 'SETUP' } });
+  }
+
+  function downloadReceivedFile() {
+    var fr = state.fileReceive;
+    if (!fr.fileData) return;
+    var blob = new Blob([fr.fileData], { type: 'application/octet-stream' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fr.fileName || ('transfer_' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.bin');
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function newReceive() {
+    dispatch({ type: 'FR_UPDATE', v: {
+      phase: 'SETUP', totalFrames: 0, collectedCount: 0, framesMap: {},
+      loopCount: 0, elapsedSec: 0, validRate: 0, speedKBs: 0,
+      calibrationStep: 0, palette: null, fileData: null, fileName: null,
+      fileSizeKB: 0, consecutiveMagic: 0, totalProcessed: 0, totalValid: 0,
+      lastFrameNum: -1, errorMsg: null,
+    } });
+  }
+
+  // --- SC OCR Pipeline ---
+  var ocrCancelledRef = useRef(false);
+
+  function scStartOcr() {
+    var sc = state.scrollCapture;
+    if (!sc.resultCanvas) return;
+    ocrCancelledRef.current = false;
+    // Crop if manual target
+    var ocrCanvas = sc.resultCanvas;
+    if (sc.ocrTarget === 'manual' && sc.cropRect) {
+      var r = sc.cropRect;
+      var sx = Math.round(sc.resultWidth * r.x / 100);
+      var sy = Math.round(sc.resultHeight * r.y / 100);
+      var sw = Math.round(sc.resultWidth * r.w / 100);
+      var sh = Math.round(sc.resultHeight * r.h / 100);
+      var cropC = document.createElement('canvas');
+      cropC.width = sw; cropC.height = sh;
+      cropC.getContext('2d').drawImage(sc.resultCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+      ocrCanvas = cropC;
+    }
+    dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_PROCESSING', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '' } });
+    OcrEngine.performOcr(ocrCanvas, sc.ocrMethod, state.settings, function(idx, total) {
+      if (ocrCancelledRef.current) return;
+      dispatch({ type: 'SC_UPDATE', v: { ocrCurrentChunk: idx + 1, ocrChunks: total, ocrProgress: Math.round((idx / total) * 100) } });
+    }).then(function(text) {
+      if (!ocrCancelledRef.current) dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_RESULT', ocrText: text, ocrProgress: 100 } });
+    }).catch(function(err) {
+      console.error('OCR error:', err);
+      if (!ocrCancelledRef.current) dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_RESULT', ocrText: 'OCR \uC624\uB958: ' + err.message } });
+    });
+  }
+
+  function scCancelOcr() {
+    ocrCancelledRef.current = true;
+    dispatch({ type: 'SC_UPDATE', v: { phase: 'RESULT', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } });
+  }
+
+  function scCopyText() {
+    var text = state.scrollCapture.ocrText;
+    if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+  }
+
+  function scDownloadText() {
+    var text = state.scrollCapture.ocrText; if (!text) return;
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    a.href = url; a.download = 'scroll_capture_ocr_' + ts + '.txt'; a.click(); URL.revokeObjectURL(url);
+  }
+
+  // --- Block Text Pipeline ---
+  var btRef = useRef({
+    active: false, canvas: null, ctx: null,
+    // Rolling frame buffer: [frame_0 (newest), frame_1, frame_2 (oldest)]
+    frameBuffer: [],
+    detectTimerId: null,
+    ocrCancelled: false, historyId: 0,
+    ocrInProgress: false,
+    cooldownUntil: 0, // timestamp — suppress detection until this time
+  });
+  // Keep latest state values in ref so stale setInterval closures can read them
+  btRef.current.latestHistory = state.blockText.history || [];
+  btRef.current.latestOcrMethod = state.blockText.ocrMethod;
+
+  // --- Utility: find pixels where saturation INCREASED between old and new frame ---
+  // Returns only pixels that changed AND became more saturated (= selection highlight appeared)
+  // Ignores cursor blinks, clock changes, etc. which are low-saturation changes
+  // Also returns per-row highlight counts for row-based bounding box trimming
+  function btFindHighlight(dataNew, dataOld, vw, vh, step, pixThreshold) {
+    var a = dataNew.data; // frame_0 (current)
+    var b = dataOld.data; // frame_2 (2 intervals ago)
+    var minX = vw, minY = vh, maxX = 0, maxY = 0;
+    var highlightCount = 0;
+    var totalChanged = 0;
+    var satIncreaseMin = 0.12; // minimum saturation increase to count as highlight
+    var satAbsoluteMin = 0.15; // minimum absolute saturation in new frame
+    var rowCounts = {}; // y -> count of highlight pixels in this row
+
+    for (var y = 0; y < vh; y += step) {
+      for (var x = 0; x < vw; x += step) {
+        var idx = (y * vw + x) * 4;
+
+        // Skip if pixel didn't change
+        var dr = Math.abs(a[idx] - b[idx]);
+        var dg = Math.abs(a[idx + 1] - b[idx + 1]);
+        var db = Math.abs(a[idx + 2] - b[idx + 2]);
+        if (dr + dg + db <= pixThreshold) continue;
+        totalChanged++;
+
+        // Compute saturation of new pixel (HSV)
+        var rn = a[idx], gn = a[idx + 1], bn = a[idx + 2];
+        var maxN = Math.max(rn, gn, bn), minN = Math.min(rn, gn, bn);
+        var satNew = maxN === 0 ? 0 : (maxN - minN) / maxN;
+
+        // Compute saturation of old pixel
+        var ro = b[idx], go = b[idx + 1], bo = b[idx + 2];
+        var maxO = Math.max(ro, go, bo), minO = Math.min(ro, go, bo);
+        var satOld = maxO === 0 ? 0 : (maxO - minO) / maxO;
+
+        // Is this a highlight pixel? (saturation went UP)
+        if (satNew - satOld > satIncreaseMin && satNew > satAbsoluteMin) {
+          highlightCount++;
+          rowCounts[y] = (rowCounts[y] || 0) + 1;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    return {
+      highlightCount: highlightCount,
+      totalChanged: totalChanged,
+      minX: minX, minY: minY, maxX: maxX, maxY: maxY,
+      rowCounts: rowCounts,
+      valid: maxX > minX && maxY > minY
+    };
+  }
+
+  // --- Simple stability check: ratio of changed pixels between two frames ---
+  function btChangeRatio(dataA, dataB, vw, vh, step, threshold) {
+    var a = dataA.data; var b = dataB.data;
+    var changed = 0; var total = 0;
+    for (var y = 0; y < vh; y += step) {
+      for (var x = 0; x < vw; x += step) {
+        var idx = (y * vw + x) * 4;
+        var dr = Math.abs(a[idx] - b[idx]);
+        var dg = Math.abs(a[idx + 1] - b[idx + 1]);
+        var db = Math.abs(a[idx + 2] - b[idx + 2]);
+        total++;
+        if (dr + dg + db > threshold) changed++;
+      }
+    }
+    return total > 0 ? changed / total : 0;
+  }
+
+  function btCaptureAndDetect() {
+    var bt = btRef.current;
+    if (!bt.active || bt.ocrInProgress) return;
+    var video = videoRef.current;
+    if (!video || video.readyState < 2) return;
+    var vw = video.videoWidth; var vh = video.videoHeight;
+    if (!bt.canvas) {
+      bt.canvas = document.createElement('canvas');
+      bt.canvas.width = vw; bt.canvas.height = vh;
+      bt.ctx = bt.canvas.getContext('2d', { willReadFrequently: true });
+    }
+    bt.ctx.drawImage(video, 0, 0, vw, vh);
+    var curFrame = bt.ctx.getImageData(0, 0, vw, vh);
+
+    bt.frameBuffer.unshift(curFrame);
+    if (bt.frameBuffer.length > 3) bt.frameBuffer.length = 3;
+
+    // Cooldown after OCR — keep buffering frames but skip detection
+    var inCooldown = Date.now() < bt.cooldownUntil;
+    if (bt.frameBuffer.length < 3 || inCooldown) {
+      dispatch({ type: 'BT_UPDATE', v: { detectStatus: 'idle', stabilityPct: 0, roiRect: null } });
+      return;
+    }
+
+    var frame0 = bt.frameBuffer[0]; // current
+    var frame1 = bt.frameBuffer[1]; // 1 interval ago
+    var frame2 = bt.frameBuffer[2]; // 2 intervals ago
+    var step = 4; var threshold = 40;
+
+    // Step 1: Stability gate (relaxed) — screen should be mostly stable
+    var stability = btChangeRatio(frame0, frame1, vw, vh, step, threshold);
+    console.log('[BT] Step1 stability=' + (stability * 100).toFixed(2) + '% (need <1%)');
+    if (stability >= 0.01) {
+      // Screen still changing — not stable yet
+      dispatch({ type: 'BT_UPDATE', v: { detectStatus: 'detected', stabilityPct: 0, roiRect: null } });
+      return;
+    }
+
+    // Step 2: Find highlight pixels (saturation increased between frame_2 and frame_0)
+    var hl = btFindHighlight(frame0, frame2, vw, vh, step, threshold);
+    console.log('[BT] Step2 hlCount=' + hl.highlightCount + ' totalChanged=' + hl.totalChanged + ' valid=' + hl.valid);
+    if (!hl.valid || hl.highlightCount < 20) {
+      // No significant highlight appeared
+      dispatch({ type: 'BT_UPDATE', v: { detectStatus: 'idle', stabilityPct: 0, roiRect: null } });
+      return;
+    }
+
+    // Step 3: Row-based bounding box trimming — clip to contiguous band of highlight rows
+    // This removes scattered noise pixels far above/below the actual selection
+    var rowKeys = Object.keys(hl.rowCounts).map(Number).sort(function(a, b) { return a - b; });
+    var peakCount = 0;
+    for (var ri = 0; ri < rowKeys.length; ri++) {
+      if (hl.rowCounts[rowKeys[ri]] > peakCount) peakCount = hl.rowCounts[rowKeys[ri]];
+    }
+    var rowThreshold = Math.max(1, Math.floor(peakCount * 0.10)); // rows need >10% of peak to qualify
+    // Find first and last qualifying rows
+    var trimMinY = hl.minY, trimMaxY = hl.maxY;
+    for (var ri = 0; ri < rowKeys.length; ri++) {
+      if (hl.rowCounts[rowKeys[ri]] >= rowThreshold) { trimMinY = rowKeys[ri]; break; }
+    }
+    for (var ri = rowKeys.length - 1; ri >= 0; ri--) {
+      if (hl.rowCounts[rowKeys[ri]] >= rowThreshold) { trimMaxY = rowKeys[ri]; break; }
+    }
+    console.log('[BT] Step3 rowTrim peakCount=' + peakCount + ' rowThreshold=' + rowThreshold + ' trimY=[' + trimMinY + ',' + trimMaxY + '] origY=[' + hl.minY + ',' + hl.maxY + ']');
+
+    // Step 4: Region size check (using trimmed bounds)
+    var roiW = hl.maxX - hl.minX;
+    var roiH = trimMaxY - trimMinY;
+    var roiArea = roiW * roiH; var frameArea = vw * vh;
+    var roiPct = (roiArea / frameArea * 100).toFixed(2);
+    console.log('[BT] Step4 roiW=' + roiW + ' roiH=' + roiH + ' area=' + roiPct + '% (need 0.1%~40%)');
+    if (roiArea < frameArea * 0.001 || roiArea > frameArea * 0.4) {
+      dispatch({ type: 'BT_UPDATE', v: { detectStatus: 'idle', stabilityPct: 0, roiRect: null } });
+      return;
+    }
+
+    // Step 5: Density check — highlight pixels should be concentrated, not scattered
+    var boxSamples = (roiW / step) * (roiH / step);
+    var density = boxSamples > 0 ? hl.highlightCount / boxSamples : 0;
+    console.log('[BT] Step5 density=' + (density * 100).toFixed(2) + '% (need >=5%) hlCount=' + hl.highlightCount + ' boxSamples=' + Math.round(boxSamples));
+    if (density < 0.05) {
+      // Too sparse — likely noise
+      dispatch({ type: 'BT_UPDATE', v: { detectStatus: 'idle', stabilityPct: 0, roiRect: null } });
+      return;
+    }
+
+    // All checks passed: stable screen + new change + high saturation = text selection detected!
+    var pad = 8;
+    var rx = Math.max(0, ((hl.minX - pad) / vw) * 100);
+    var ry = Math.max(0, ((trimMinY - pad) / vh) * 100);
+    var rw = Math.min(100 - rx, ((roiW + pad * 2) / vw) * 100);
+    var rh = Math.min(100 - ry, ((roiH + pad * 2) / vh) * 100);
+    var roi = {
+      x: rx, y: ry, w: rw, h: rh,
+      px: Math.max(0, hl.minX - pad), py: Math.max(0, trimMinY - pad),
+      pw: Math.min(vw, roiW + pad * 2), ph: Math.min(vh, roiH + pad * 2)
+    };
+
+    console.log('[BT] ✅ ALL PASSED! ROI: x=' + roi.px + ' y=' + roi.py + ' w=' + roi.pw + ' h=' + roi.ph + ' → triggering OCR');
+    // Trigger OCR
+    bt.ocrInProgress = true;
+    dispatch({ type: 'BT_UPDATE', v: { detectStatus: 'stabilizing', stabilityPct: 100, roiRect: roi, phase: 'PROCESSING' } });
+    btExtractAndOcr(roi, vw, vh);
+  }
+
+  function btExtractAndOcr(roi, vw, vh) {
+    var bt = btRef.current;
+    bt.ocrCancelled = false;
+    // Extract ROI from canvas
+    var sx = Math.max(0, Math.round(roi.px));
+    var sy = Math.max(0, Math.round(roi.py));
+    var sw = Math.min(vw - sx, Math.round(roi.pw));
+    var sh = Math.min(vh - sy, Math.round(roi.ph));
+    if (sw <= 0 || sh <= 0) {
+      dispatch({ type: 'BT_UPDATE', v: { phase: 'MONITORING', detectStatus: 'idle', stabilityPct: 0, roiRect: null, errorMsg: 'ROI \uCD94\uCD9C \uC2E4\uD328' } });
+      addToast('error', 'ROI \uCD94\uCD9C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.');
+      bt.ocrInProgress = false;
+      return;
+    }
+    var roiCanvas = document.createElement('canvas');
+    roiCanvas.width = sw; roiCanvas.height = sh;
+    var roiCtx = roiCanvas.getContext('2d');
+    roiCtx.drawImage(bt.canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    // Run OCR (use ref for latest ocrMethod to avoid stale closure)
+    var ocrMethod = bt.latestOcrMethod || state.blockText.ocrMethod;
+    OcrEngine.performOcr(roiCanvas, ocrMethod, state.settings, function(idx, total) {
+      if (bt.ocrCancelled) return;
+      dispatch({ type: 'BT_UPDATE', v: { ocrCurrentChunk: idx + 1, ocrChunks: total, ocrProgress: Math.round(((idx + 1) / total) * 100) } });
+    }).then(function(text) {
+      if (bt.ocrCancelled) return;
+      if (text && text.trim()) {
+        // Auto-copy to clipboard (with fallback for unfocused document)
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text.trim()).catch(function(err) {
+            console.warn('[BT] Clipboard write failed (document not focused?):', err.message);
+          });
+        }
+        // Add to history (max 20, deduplicate consecutive)
+        var normalizedText = text.trim();
+        var prevHistory = bt.latestHistory || [];
+        var isDuplicate = prevHistory.length > 0 && prevHistory[0].text.trim() === normalizedText;
+        var newHistory;
+        if (isDuplicate) {
+          // Update timestamp of existing entry
+          newHistory = prevHistory.slice();
+          newHistory[0] = Object.assign({}, newHistory[0], { time: new Date().toLocaleTimeString('ko-KR', { hour12: false }) });
+        } else {
+          bt.historyId++;
+          var entry = { id: bt.historyId, text: normalizedText, time: new Date().toLocaleTimeString('ko-KR', { hour12: false }) };
+          newHistory = [entry].concat(prevHistory).slice(0, 20);
+        }
+        dispatch({ type: 'BT_UPDATE', v: { phase: 'MONITORING', detectStatus: 'idle', stabilityPct: 0, roiRect: null, processingText: normalizedText, history: newHistory, ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, errorMsg: null } });
+        addToast('success', '"' + normalizedText.substring(0, 50) + (normalizedText.length > 50 ? '...' : '') + '"', '\uD074\uB9BD\uBCF4\uB4DC\uC5D0 \uBCF5\uC0AC\uB418\uC5C8\uC2B5\uB2C8\uB2E4');
+      } else {
+        dispatch({ type: 'BT_UPDATE', v: { phase: 'MONITORING', detectStatus: 'idle', stabilityPct: 0, roiRect: null, ocrProgress: 0, errorMsg: 'OCR \uACB0\uACFC\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4' } });
+        addToast('warning', 'OCR \uACB0\uACFC\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uC120\uD0DD \uC601\uC5ED\uC744 \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.');
+      }
+      // Reset detection state + cooldown to prevent re-triggering on deselection
+      bt.ocrInProgress = false;
+      bt.frameBuffer = [];
+      bt.cooldownUntil = Date.now() + 5000; // 5s cooldown after OCR
+    }).catch(function(err) {
+      console.error('Block text OCR error:', err);
+      if (!bt.ocrCancelled) {
+        dispatch({ type: 'BT_UPDATE', v: { phase: 'MONITORING', detectStatus: 'idle', stabilityPct: 0, roiRect: null, ocrProgress: 0, errorMsg: 'OCR \uC624\uB958: ' + err.message } });
+        addToast('error', 'OCR \uC624\uB958: ' + err.message);
+      }
+      bt.ocrInProgress = false;
+      bt.frameBuffer = [];
+      bt.cooldownUntil = Date.now() + 5000;
+    });
+  }
+
+  function startBlockText() {
+    var bt = btRef.current;
+    bt.active = true; bt.canvas = null; bt.ctx = null;
+    bt.frameBuffer = []; bt.ocrCancelled = false; bt.ocrInProgress = false;
+    dispatch({ type: 'BT_UPDATE', v: { phase: 'MONITORING', detectStatus: 'idle', stabilityPct: 0, roiRect: null, processingText: '', errorMsg: null, ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } });
+    // Ensure video ref gets the stream after React renders the <video> element
+    setTimeout(function() { var el = videoRef.current; if (el && streamRef.current) el.srcObject = streamRef.current; }, 200);
+    // Start detection loop at capture interval (default 1s)
+    var intervalMs = (state.blockText.stabilityThreshold || 1) * 1000;
+    bt.detectTimerId = setInterval(function() { btCaptureAndDetect(); }, intervalMs);
+  }
+
+  function stopBlockText() {
+    var bt = btRef.current;
+    bt.active = false; bt.ocrCancelled = true; bt.ocrInProgress = false;
+    if (bt.detectTimerId) { clearInterval(bt.detectTimerId); bt.detectTimerId = null; }
+    dispatch({ type: 'BT_UPDATE', v: { phase: 'SETUP', detectStatus: 'idle', stabilityPct: 0, roiRect: null, ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, errorMsg: null } });
+  }
+
+  function btClearHistory() {
+    dispatch({ type: 'BT_UPDATE', v: { history: [] } });
+  }
+
+  // Keyboard shortcuts
+  useEffect(function() {
+    function onKey(e) {
+      var sc = state.scrollCapture;
+      if (e.code === 'Space' && (sc.phase === 'READY' || sc.phase === 'CAPTURING') && state.mode === MODES.SC) {
+        e.preventDefault();
+        if (sc.phase === 'READY') startCapture();
+        else stopCapture();
+      }
+      if (e.code === 'Escape' && state.mode === MODES.SC) {
+        if (sc.phase === 'CAPTURING') stopCapture();
+        else if (sc.phase === 'ASSEMBLING') cancelAssemble();
+        else if (sc.phase === 'OCR_PROCESSING') scCancelOcr();
+      }
+      // Block text: Space to start/stop, Escape to stop
+      var bt = state.blockText;
+      if (e.code === 'Space' && state.mode === MODES.BT) {
+        e.preventDefault();
+        if (bt.phase === 'SETUP' && state.device.connected) startBlockText();
+        else if (bt.phase === 'MONITORING') stopBlockText();
+      }
+      if (e.code === 'Escape' && state.mode === MODES.BT) {
+        if (bt.phase === 'MONITORING' || bt.phase === 'PROCESSING') stopBlockText();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return function() { window.removeEventListener('keydown', onKey); };
+  });
+
+  return h(ViewportGuard, null,
+    h('div', { className: 'h-full flex flex-col bg-zinc-900' },
+      h(TopBar, { mode: state.mode, dispatch: dispatch }),
+      h('div', { className: S.mainLayout },
+        h(SidebarSwitch, { state: state, dispatch: dispatch, onStartCapture: startCapture, onStopCapture: stopCapture, onCancelAssemble: cancelAssemble, onStartOcr: scStartOcr, onCancelOcr: scCancelOcr, onCopyText: scCopyText, onDownloadText: scDownloadText, onStartReceive: startReceive, onStopReceive: stopReceive, onDownloadFile: downloadReceivedFile, onNewReceive: newReceive, onStartBlockText: startBlockText, onStopBlockText: stopBlockText, onClearHistory: btClearHistory }),
+        h(MainContent, { state: state, stream: stream, videoRef: videoRef, dispatch: dispatch, onCopyText: scCopyText, onDownloadText: scDownloadText, onRequestPermission: requestCameraPermission })
+      ),
+      h(StatusBar, { state: state }),
+      h(ToastContainer, { toasts: toasts, onDismiss: dismissToast })
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Render
+   ═══════════════════════════════════════════════════════════════ */
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+
+</script>
+</body>
+</html>
