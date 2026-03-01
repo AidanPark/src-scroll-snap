@@ -2,7 +2,7 @@
 
 A browser-based tool that extracts screen content from an external PC via HDMI capture card.
 
-**https://aidanpark.github.io/src-scroll-snap/**
+**<a href="https://aidanpark.github.io/src-scroll-snap/" target="_blank">https://aidanpark.github.io/src-scroll-snap/</a>**
 
 [한국어](README.ko.md)
 

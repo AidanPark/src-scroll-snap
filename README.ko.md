@@ -2,7 +2,7 @@
 
 HDMI 캡처카드를 통해 외부 PC의 화면 내용을 가져오는 브라우저 기반 도구입니다.
 
-**https://aidanpark.github.io/src-scroll-snap/**
+**<a href="https://aidanpark.github.io/src-scroll-snap/" target="_blank">https://aidanpark.github.io/src-scroll-snap/</a>**
 
 [English](README.md)
 
