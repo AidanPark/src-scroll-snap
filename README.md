@@ -1,62 +1,64 @@
 # ScrollSnap
 
-HDMI 캡처카드를 통해 외부 PC의 화면 내용을 가져오는 브라우저 기반 도구입니다.
+A browser-based tool that extracts screen content from an external PC via HDMI capture card.
 
 **https://aidanpark.github.io/src-scroll-snap/**
 
-## 문제 상황
+[한국어](README.ko.md)
 
-다른 컴퓨터(소스 PC)에 있는 파일이나 텍스트를 내 컴퓨터(타겟 PC)로 가져와야 하지만, 다음과 같은 제약이 있습니다:
+## The Problem
 
-| 제약 | 설명 |
-|------|------|
-| 소스 PC에 프로그램 설치 불가 | 어떤 소프트웨어도 설치하지 않음 |
-| 소스 PC에 인터넷 없음 | 온라인 도구나 웹페이지 접속 불가 |
-| 전송 경로는 HDMI만 가능 | HDMI → 캡처카드 → USB (단방향) |
-| 역방향 통신 불가 | 타겟 PC가 소스 PC에 피드백 불가 |
-| **소스 PC에 파일 전달 불가** | USB, 네트워크 등 어떤 방법으로도 소스 PC에 파일을 가져갈 수 없음 |
-| **사람의 키보드 입력이 유일한 입력 수단** | 소스 PC에서 실행할 모든 코드는 사람이 직접 타이핑해야 함 |
-| 터미널 사용 가능 | cmd.exe, PowerShell 사용 가능 |
-| Windows 내장 도구만 사용 | PowerShell, .NET Framework, certutil, notepad, Edge 등 |
+You need to transfer files or text from another computer (source PC) to yours (target PC), but face these constraints:
 
-즉, **소스 PC에서 할 수 있는 것은 키보드 입력과 화면 출력뿐**입니다.
+| Constraint | Detail |
+|-----------|--------|
+| No software installation on source PC | Nothing can be installed |
+| No internet on source PC | No access to online tools or web pages |
+| HDMI is the only transfer path | HDMI → Capture card → USB (one-way) |
+| No reverse communication | Target PC cannot send feedback to source PC |
+| **No file delivery to source PC** | No USB, network, or any other method to bring files to the source PC |
+| **Keyboard input is the only input method** | Any code to run on source PC must be manually typed |
+| Terminal available | cmd.exe, PowerShell accessible |
+| Windows built-in tools only | PowerShell, .NET Framework, certutil, notepad, Edge, etc. |
 
-## 해결 방안
+In short, **the only things you can do on the source PC are type on the keyboard and look at the screen**.
 
-HDMI 출력을 캡처카드로 수신하여, **화면에 보이는 것을 그대로 가져옵니다.**
+## The Solution
+
+Receive the HDMI output through a capture card and **grab exactly what's on the screen**.
 
 ```
-소스 PC (화면 출력) → HDMI → 캡처카드(UVC) → USB → 타겟 PC (브라우저 앱)
+Source PC (screen output) → HDMI → Capture Card (UVC) → USB → Target PC (browser app)
 ```
 
-### 하드웨어
+### Hardware
 
-| 장비 | 역할 |
-|------|------|
-| HDMI 캡처카드 (UVC 호환) | 소스 PC의 화면 영상을 USB로 수신 |
-| USB 3.0 포트 | 캡처카드 연결 |
-| HDMI 케이블 | 소스 PC ↔ 캡처카드 연결 |
+| Equipment | Role |
+|-----------|------|
+| HDMI capture card (UVC compatible) | Receives source PC screen via USB |
+| USB 3.0 port | Connects capture card |
+| HDMI cable | Connects source PC ↔ capture card |
 
-### 소프트웨어
+### Software
 
-| 구성요소 | 위치 | 설명 |
-|----------|------|------|
-| ScrollSnap 웹앱 | 타겟 PC | 브라우저에서 HTML 파일 하나를 열면 동작. 서버 불필요 |
-| Windows 내장 도구 | 소스 PC | 메모장, PowerShell 등 기본 설치된 도구만 사용. 추가 설치 없음 |
+| Component | Location | Description |
+|-----------|----------|-------------|
+| ScrollSnap web app | Target PC | Open a single HTML file in the browser. No server required |
+| Windows built-in tools | Source PC | Only pre-installed tools (Notepad, PowerShell, etc.). No additional installation |
 
-### 전송 대상별 접근
+### Transfer Methods
 
-| 전송 대상 | 소스 PC 작업 | 타겟 PC 처리 |
-|----------|------------|------------|
-| **텍스트/코드** | 파일을 뷰어로 열고 스크롤 | 화면 캡처 → 이미지 스티칭 → OCR로 텍스트 추출 |
-| **바이너리 파일** | PowerShell로 파일을 색상 패턴으로 변환하여 화면에 표시 | 화면 캡처 → 색상 판독 → 원본 파일 복원 |
+| Target | Source PC Action | Target PC Processing |
+|--------|-----------------|---------------------|
+| **Text / Code** | Open file in a viewer and scroll | Screen capture → Image stitching → OCR text extraction |
+| **Binary files** | Convert file to color grid pattern via PowerShell and display on screen | Screen capture → Color decoding → Original file restoration |
 
-텍스트 전송은 소스 PC에서 사전 작업이 전혀 필요 없습니다. 바이너리 파일 전송은 소스 PC에서 PowerShell 스크립트를 직접 타이핑하여 실행해야 합니다.
+Text transfer requires **zero setup** on the source PC. Binary file transfer requires manually typing a PowerShell script on the source PC.
 
-## 프로젝트 상태
+## Project Status
 
-v0.2.5 — 블록 텍스트, 스크롤 캡처, 파일 수신 기능 구현 완료.
+v0.2.6 — Block text detection, scroll capture, and file receive fully implemented.
 
-## 라이선스
+## License
 
 MIT License
