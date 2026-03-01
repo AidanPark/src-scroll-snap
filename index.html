@@ -826,7 +826,7 @@ var INIT_STATE = {
   scrollCapture: { phase: 'IDLE', direction: 'vertical', elapsedSec: 0, frameCount: 0, matchQuality: 0, consecutiveFails: 0, memoryMB: 0, assembleProgress: 0, chainLength: 0, excludedFrames: 0, resultCanvas: null, resultWidth: 0, resultHeight: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrMethod: 'tesseract', ocrTarget: 'auto', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '', cropRect: null },
   fileReceive: { phase: 'SETUP', scriptVersion: 'full', totalFrames: 0, collectedCount: 0, framesMap: {}, loopCount: 0, elapsedSec: 0, validRate: 0, speedKBs: 0, calibrationStep: 0, palette: null, fileData: null, fileName: null, fileSizeKB: 0, consecutiveMagic: 0, totalProcessed: 0, totalValid: 0, lastFrameNum: -1, errorMsg: null },
   blockText: { phase: 'SETUP', stabilityThreshold: 1.0, detectStatus: 'idle', stabilityPct: 0, roiRect: null, history: [], processingText: '', ocrMethod: 'tesseract', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, errorMsg: null, showLiveView: true },
-  settings: { cvAuthType: 'apiKey', cvApiKey: '', cvOauthToken: '', oaiApiKey: '', oaiModel: 'gpt-4o', antApiKey: '', antModel: 'claude-4', gemApiKey: '', gemModel: 'gemini-2.0', keyStorage: 'none', capDirection: 'vertical', capFrameRate: 30, capMaxFrames: 2000, capMemoryBudget: 1500, btStabilityThreshold: 85, btAutoClipboard: true, btNotifDuration: 3, btSensitivity: 'medium' },
+  settings: { cvAuthType: 'apiKey', cvApiKey: '', cvOauthToken: '', oaiApiKey: '', oaiModel: 'gpt-4o', antApiKey: '', antModel: 'claude-sonnet-4-20250514', gemApiKey: '', gemModel: 'gemini-2.0', keyStorage: 'none', capDirection: 'vertical', capFrameRate: 30, capMaxFrames: 2000, capMemoryBudget: 1500, btStabilityThreshold: 85, btAutoClipboard: true, btNotifDuration: 3, btSensitivity: 'medium' },
 };
 
 function reducer(st, a) {
@@ -908,7 +908,7 @@ function getOcrOptions(settings) {
   }
   // LLM Vision providers: check each individually
   if (settings.oaiApiKey) opts.push({ value: 'llm-openai', label: 'OpenAI ' + (settings.oaiModel || 'gpt-4o') });
-  if (settings.antApiKey) opts.push({ value: 'llm-anthropic', label: 'Anthropic ' + (settings.antModel || 'claude-4') });
+  if (settings.antApiKey) opts.push({ value: 'llm-anthropic', label: 'Anthropic ' + (settings.antModel || 'claude-sonnet-4-20250514') });
   if (settings.gemApiKey) opts.push({ value: 'llm-gemini', label: 'Gemini ' + (settings.gemModel || 'gemini-2.0') });
   // Tesseract always last (fallback)
   opts.push({ value: 'tesseract', label: 'Tesseract (로컬)' });
@@ -2408,7 +2408,7 @@ function BlockTextSidebar(props) {
 var PROVIDERS = [
   { id: 'cv', name: 'Google Cloud Vision', kf: 'cvApiKey', hasAuth: true },
   { id: 'oai', name: 'OpenAI', kf: 'oaiApiKey', mf: 'oaiModel', models: [['gpt-4o','GPT-4o'],['gpt-4o-mini','GPT-4o Mini']] },
-  { id: 'ant', name: 'Anthropic', kf: 'antApiKey', mf: 'antModel', models: [['claude-4','Claude 4'],['claude-3.5-sonnet','Claude 3.5 Sonnet']], note: true },
+  { id: 'ant', name: 'Anthropic', kf: 'antApiKey', mf: 'antModel', models: [['claude-sonnet-4-20250514','Claude Sonnet 4'],['claude-3-5-sonnet-20241022','Claude 3.5 Sonnet']], note: true },
   { id: 'gem', name: 'Google Gemini', kf: 'gemApiKey', mf: 'gemModel', models: [['gemini-2.0','Gemini 2.0'],['gemini-1.5-pro','Gemini 1.5 Pro']] },
 ];
 
@@ -2441,8 +2441,11 @@ function SettingsMain(props) {
     }
     pr.then(function(res) {
       var ms = Date.now() - t0; var r2 = Object.assign({}, tests);
-      r2[prov.id] = res.ok ? { s: 'ok', m: '\uc5f0\uacb0 \uc131\uacf5 (' + ms + 'ms)' } : { s: 'err', m: res.status === 401 || res.status === 403 ? 'API \ud0a4\uac00 \uc720\ud6a8\ud558\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.' : res.status === 429 ? '\uc694\uccad \ud55c\ub3c4 \ucd08\uacfc. \uc7a0\uc2dc \ud6c4 \uc7ac\uc2dc\ub3c4.' : 'HTTP ' + res.status + ' \uc624\ub958' };
-      setTests(r2);
+      if (res.ok) { r2[prov.id] = { s: 'ok', m: '\uc5f0\uacb0 \uc131\uacf5 (' + ms + 'ms)' }; setTests(r2); return; }
+      res.json().catch(function() { return {}; }).then(function(j) {
+        var msg = (j && j.error && j.error.message) || ('HTTP ' + res.status);
+        r2[prov.id] = { s: 'err', m: msg }; setTests(r2);
+      });
     }).catch(function() { var r2 = Object.assign({}, tests); r2[prov.id] = { s: 'err', m: '\ub124\ud2b8\uc6cc\ud06c \uc5f0\uacb0\uc744 \ud655\uc778\ud574 \uc8fc\uc138\uc694.' }; setTests(r2); });
   }
 
@@ -2956,7 +2959,10 @@ function App() {
     try {
       var saved = localStorage.getItem('scrollsnap_settings');
       if (!saved) saved = sessionStorage.getItem('scrollsnap_settings');
-      if (saved) dispatch({ type: 'SET_UPDATE', v: JSON.parse(saved) });
+      var parsed = JSON.parse(saved);
+      var MODEL_MIGRATION = { 'claude-4': 'claude-sonnet-4-20250514', 'claude-3.5-sonnet': 'claude-3-5-sonnet-20241022' };
+      if (parsed.antModel && MODEL_MIGRATION[parsed.antModel]) parsed.antModel = MODEL_MIGRATION[parsed.antModel];
+      if (saved) dispatch({ type: 'SET_UPDATE', v: parsed });
     } catch(e) {}
   }, []);
 
