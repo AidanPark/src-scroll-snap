@@ -57,20 +57,20 @@ var Fragment = React.Fragment;
 var S = {
   topBar: 'bg-zinc-900 border-b border-zinc-700 h-12 px-4 flex items-center gap-4',
   statusBar: 'bg-zinc-900 border-t border-zinc-700 h-8 px-4 flex items-center gap-3 text-xs font-mono text-zinc-500',
-  sidebar: 'w-[340px] min-w-[320px] bg-zinc-800 border-r border-zinc-700 p-4 overflow-y-auto flex-shrink-0',
+  sidebar: 'bg-zinc-800 border-r border-zinc-700 p-3 overflow-y-auto flex-shrink-0 text-xs',
   mainContent: 'flex-1 min-w-0 bg-zinc-900 flex flex-col relative overflow-hidden',
   mainLayout: 'flex flex-1 min-h-0 overflow-hidden',
 
   sectionTitle: 'text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2',
   sectionDivider: 'border-t border-zinc-700 my-4',
 
-  btnPrimary: 'bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white px-4 py-2.5 rounded-lg font-medium transition-all duration-150 w-full text-sm',
-  btnDanger: 'bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white px-4 py-2.5 rounded-lg font-medium transition-all duration-150 w-full text-sm',
-  btnSecondary: 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100 px-4 py-2.5 rounded-lg transition-colors duration-150 w-full text-sm',
-  btnGhost: 'hover:bg-zinc-700/50 text-zinc-300 px-3 py-2 rounded-lg transition-colors duration-150 text-sm',
+  btnPrimary: 'bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white px-3 py-2 rounded-lg font-medium transition-all duration-150 w-full text-xs',
+  btnDanger: 'bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white px-3 py-2 rounded-lg font-medium transition-all duration-150 w-full text-xs',
+  btnSecondary: 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100 px-3 py-2 rounded-lg transition-colors duration-150 w-full text-xs',
+  btnGhost: 'hover:bg-zinc-700/50 text-zinc-300 px-2.5 py-1.5 rounded-lg transition-colors duration-150 text-xs',
   btnDisabled: 'opacity-50 cursor-not-allowed pointer-events-none',
 
-  select: 'bg-zinc-700 border border-zinc-600 text-zinc-100 rounded-lg px-3 py-2 text-sm w-full focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none',
+  select: 'bg-zinc-700 border border-zinc-600 text-zinc-100 rounded-lg px-2.5 py-1.5 text-xs w-full focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none',
 
   card: 'bg-zinc-800 border border-zinc-700 rounded-xl p-4',
   badge: 'bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded text-xs inline-flex items-center gap-1',
@@ -85,6 +85,17 @@ var S = {
 
   statLabel: 'text-xs text-zinc-500 mb-0.5',
   statValue: 'text-2xl font-bold font-mono text-zinc-100',
+};
+
+var FS = {
+  videoContainer: 'fixed inset-0 z-50 bg-black',
+  video: 'w-full h-full object-contain',
+  enterBtn: 'absolute top-3 right-3 z-10 bg-zinc-900/70 hover:bg-zinc-900/90 backdrop-blur border border-zinc-600/50 rounded-lg p-2 text-zinc-300 hover:text-zinc-100 transition-all duration-150',
+  exitBtn: 'fixed top-4 right-4 z-[51] bg-zinc-900/60 hover:bg-zinc-900/90 backdrop-blur border border-zinc-600/40 rounded-lg p-2.5 text-zinc-400 hover:text-white transition-all duration-150',
+  actionBtn: 'rounded-full px-5 py-2.5 font-medium text-sm shadow-lg shadow-black/40 transition-all duration-150',
+  statusBadge: 'fixed top-4 left-4 z-[51] bg-zinc-900/60 backdrop-blur border border-zinc-600/40 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-200 transition-opacity duration-300',
+  overlayVisible: 'opacity-100 pointer-events-auto',
+  overlayHidden: 'opacity-0 pointer-events-none',
 };
 
 /* ═══════════════════════════════════════════════════════════════
@@ -149,6 +160,22 @@ var IGrid = mkIcon([
   ['line', {x1:'3',y1:'15',x2:'21',y2:'15'}],
   ['line', {x1:'9',y1:'3',x2:'9',y2:'21'}],
   ['line', {x1:'15',y1:'3',x2:'15',y2:'21'}],
+]);
+var IMaximize = mkIcon([
+  ['polyline', {points:'15 3 21 3 21 9'}],
+  ['polyline', {points:'9 21 3 21 3 15'}],
+  ['line', {x1:'21',y1:'3',x2:'14',y2:'10'}],
+  ['line', {x1:'3',y1:'21',x2:'10',y2:'14'}],
+]);
+var IMinimize = mkIcon([
+  ['polyline', {points:'4 14 10 14 10 20'}],
+  ['polyline', {points:'20 10 14 10 14 4'}],
+  ['line', {x1:'14',y1:'10',x2:'21',y2:'3'}],
+  ['line', {x1:'3',y1:'21',x2:'10',y2:'14'}],
+]);
+var IXMark = mkIcon([
+  ['line', {x1:'18',y1:'6',x2:'6',y2:'18'}],
+  ['line', {x1:'6',y1:'6',x2:'18',y2:'18'}],
 ]);
 
 /* ═══════════════════════════════════════════════════════════════
@@ -817,6 +844,7 @@ var OcrEngine = (function() {
 
 
 var INIT_STATE = {
+  isFullscreen: false,
   mode: MODES.SC,
   device: {
     connected: false, name: null, resolution: null, fps: null,
@@ -824,7 +852,7 @@ var INIT_STATE = {
     selectedDeviceId: null,
     needsPermission: false, permissionDenied: false,
   },
-  scrollCapture: { phase: 'IDLE', direction: 'vertical', elapsedSec: 0, frameCount: 0, matchQuality: 0, consecutiveFails: 0, memoryMB: 0, assembleProgress: 0, chainLength: 0, excludedFrames: 0, resultCanvas: null, resultWidth: 0, resultHeight: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrMethod: 'tesseract', ocrTarget: 'auto', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '', cropRect: null },
+  scrollCapture: { phase: 'IDLE', direction: 'vertical', elapsedSec: 0, frameCount: 0, matchQuality: 0, consecutiveFails: 0, memoryMB: 0, assembleProgress: 0, chainLength: 0, excludedFrames: 0, resultCanvas: null, resultWidth: 0, resultHeight: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrMethod: 'tesseract', ocrTarget: 'manual', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '', cropRect: { x: 10, y: 10, w: 80, h: 80 } },
   fileReceive: { phase: 'SETUP', scriptVersion: 'full', totalFrames: 0, collectedCount: 0, framesMap: {}, loopCount: 0, elapsedSec: 0, validRate: 0, speedKBs: 0, calibrationStep: 0, palette: null, fileData: null, fileName: null, fileSizeKB: 0, consecutiveMagic: 0, totalProcessed: 0, totalValid: 0, lastFrameNum: -1, errorMsg: null },
   blockText: { phase: 'SETUP', stabilityThreshold: 1.0, detectStatus: 'idle', stabilityPct: 0, roiRect: null, history: [], processingText: '', ocrMethod: 'tesseract', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, errorMsg: null, showLiveView: true },
   settings: { cvAuthType: 'apiKey', cvApiKey: '', cvOauthToken: '', oaiApiKey: '', oaiModel: 'gpt-4o', antApiKey: '', antModel: 'claude-sonnet-4-20250514', gemApiKey: '', gemModel: 'gemini-2.0', keyStorage: 'none', capDirection: 'vertical', capFrameRate: 30, capMaxFrames: 2000, capMemoryBudget: 1500, btStabilityThreshold: 85, btAutoClipboard: true, btNotifDuration: 3, btSensitivity: 'medium' },
@@ -862,10 +890,31 @@ function reducer(st, a) {
     case 'SELECT_DEVICE':
       return Object.assign({}, st, { device: Object.assign({}, st.device, { selectedDeviceId: a.v }) });
 
+    case 'SET_FULLSCREEN': return Object.assign({}, st, { isFullscreen: a.v });
     case 'SET_UPDATE':   return Object.assign({}, st, { settings: Object.assign({}, st.settings, a.v) });
     default: return st;
   }
 }
+
+function canEnterFullscreen(state) {
+  var mode = state.mode;
+  if (mode === MODES.SC) {
+    var phase = state.scrollCapture.phase;
+    return phase === 'READY' || phase === 'CAPTURING';
+  }
+  if (mode === MODES.BT) {
+    var phase = state.blockText.phase;
+    return phase === 'MONITORING' || phase === 'PROCESSING';
+  }
+  return false;
+}
+
+function shouldAutoExitFullscreen(state) {
+  if (state.mode === MODES.SC && (state.scrollCapture.phase === 'ASSEMBLING' || state.scrollCapture.phase === 'RESULT')) return true;
+  if (!state.device.connected) return true;
+  return false;
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
    Helper Components
@@ -994,7 +1043,7 @@ var TOAST_STYLES = {
 function ToastContainer(props) {
   var toasts = props.toasts || [];
   if (toasts.length === 0) return null;
-  return h('div', { className: 'fixed bottom-10 right-4 z-50 flex flex-col-reverse gap-2 max-w-sm', 'aria-live': 'polite' },
+  return h('div', { className: 'fixed bottom-10 right-4 z-[53] flex flex-col-reverse gap-2 max-w-sm', 'aria-live': 'polite' },
     toasts.slice(0, 3).map(function(t) {
       var style = TOAST_STYLES[t.type] || TOAST_STYLES.info;
       return h('div', {
@@ -1036,13 +1085,19 @@ function VideoPreview(props) {
     }
   }, [stream]);
 
-  return h('div', { className: 'flex-1 flex flex-col bg-black relative min-h-0' },
+  var containerCls = props.isFullscreen
+    ? FS.videoContainer
+    : 'flex-1 flex flex-col bg-black relative min-h-0';
+  var videoCls = props.isFullscreen
+    ? FS.video
+    : 'flex-1 object-contain bg-black min-h-0';
+  return h('div', { className: containerCls, onDoubleClick: props.onDoubleClick || null },
     h('video', {
       ref: function(el) { videoRef.current = el; if (props.videoRef) props.videoRef.current = el; },
       autoPlay: true,
       playsInline: true,
       muted: true,
-      className: 'flex-1 object-contain bg-black min-h-0',
+      className: videoCls,
       'aria-label': '\uCEA1\uCC98\uCE74\uB4DC \uC2E4\uC2DC\uAC04 \uBBF8\uB9AC\uBCF4\uAE30',
     }),
     props.resolution ? h('div', { className: 'absolute bottom-2 left-3 text-xs font-mono text-zinc-500' },
@@ -1303,17 +1358,18 @@ function ScrollCaptureMain(props) {
   }
   if (st.phase === 'READY') {
     return h('div', { className: 'flex-1 flex flex-col min-h-0 relative' },
-      h(VideoPreview, { stream: props.stream, resolution: props.resolution, fps: props.fps }),
+      h(VideoPreview, { stream: props.stream, resolution: props.resolution, fps: props.fps, isFullscreen: props.isFullscreen, videoRef: props.videoRef, onDoubleClick: props.onDoubleClickVideo }),
       // Crop rectangle overlay (manual OCR target)
       st.ocrTarget === 'manual' && st.cropRect ? h(CropRectOverlay, {
         rect: st.cropRect,
         onChange: function(r) { props.dispatch({ type: 'SC_UPDATE', v: { cropRect: r } }); }
       }) : null,
+      h(FullscreenButton, { onClick: function() { props.dispatch({ type: 'SET_FULLSCREEN', v: true }); }, visible: props.canFullscreen }),
     );
   }
   if (st.phase === 'CAPTURING') {
     var hasCrop = st.ocrTarget === 'manual' && st.cropRect;
-    return h('div', { className: 'flex-1 flex flex-col bg-black relative min-h-0' },
+    return h('div', { className: 'flex-1 flex flex-col bg-black relative min-h-0', onDoubleClick: props.onDoubleClickVideo },
       h('div', { className: 'absolute top-3 left-3 z-20 flex items-center gap-2' },
         h('span', { className: 'w-3 h-3 rounded-full bg-red-500 animate-pulse-dot' }),
         h('span', { className: 'text-red-500 text-sm font-bold' }, 'REC'),
@@ -1342,7 +1398,8 @@ function ScrollCaptureMain(props) {
       ) : h('div', { className: 'absolute inset-0 border-2 border-red-500 pointer-events-none' }),
       props.resolution ? h('div', { className: 'absolute bottom-2 left-3 text-xs font-mono text-zinc-500 z-20' },
         props.resolution + (props.fps ? ' @ ' + props.fps + 'fps' : '')
-      ) : null
+      ) : null,
+      h(FullscreenButton, { onClick: function() { props.dispatch({ type: 'SET_FULLSCREEN', v: true }); }, visible: props.canFullscreen }),
     );
   }
   if (st.phase === 'ASSEMBLING') {
@@ -1527,13 +1584,9 @@ function ScrollCaptureSidebar(props) {
       st.excludedFrames > 0 ? h(SbSection, null, h(WarningBox, null, '\uB9E4\uCE6D \uC2E4\uD328\uB85C \uB204\uB77D \uAD6C\uAC04\uC774 \uC788\uC2B5\uB2C8\uB2E4.')) : null,
       h(SbSection, { title: '\uC774\uBBF8\uC9C0 \uB2E4\uC6B4\uB85C\uB4DC' },
         h('button', {
-          className: S.btnPrimary + ' flex items-center justify-center gap-2 mb-2',
+          className: S.btnPrimary + ' flex items-center justify-center gap-2',
           onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'png', 'scroll_capture_' + ts); },
-        }, h(IDownload, { size: 16 }), 'PNG \uB2E4\uC6B4\uB85C\uB4DC'),
-        h('button', {
-          className: S.btnSecondary + ' flex items-center justify-center gap-2',
-          onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'jpeg', 'scroll_capture_' + ts); },
-        }, h(IDownload, { size: 16 }), 'JPEG \uB2E4\uC6B4\uB85C\uB4DC')
+        }, h(IDownload, { size: 16 }), 'PNG \uB2E4\uC6B4\uB85C\uB4DC')
       ),
       h(SbSection, { title: 'OCR 실행' },
         h('div', { className: 'mb-2' },
@@ -2197,7 +2250,7 @@ function BlockTextMain(props) {
     var roi = st.roiRect;
     var isProcessing = st.phase === 'PROCESSING';
     var showLive = st.showLiveView !== false;
-    return h('div', { className: 'flex-1 flex flex-col min-h-0 relative' },
+    return h('div', { className: props.isFullscreen ? FS.videoContainer : 'flex-1 flex flex-col min-h-0 relative', onDoubleClick: props.onDoubleClickVideo },
       // Video element — ALWAYS in DOM for frame capture, visually hidden when live view off
       h('video', {
         ref: function(el) {
@@ -2207,7 +2260,7 @@ function BlockTextMain(props) {
           }
         },
         autoPlay: true, playsInline: true, muted: true,
-        className: showLive ? 'flex-1 object-contain bg-black min-h-0' : 'absolute w-0 h-0 overflow-hidden',
+        className: props.isFullscreen ? FS.video : (showLive ? 'flex-1 object-contain bg-black min-h-0' : 'absolute w-0 h-0 overflow-hidden'),
       }),
       // When live view is off, show compact status panel
       !showLive ? h('div', { className: 'flex-1 flex flex-col items-center justify-center bg-zinc-900 gap-4' },
@@ -2258,7 +2311,8 @@ function BlockTextMain(props) {
         )
       ) : null,
       // OCR badge top-right
-      showLive ? h('div', { className: 'absolute top-3 right-3' }, h(OcrBadge, { method: st.ocrMethod })) : null
+      showLive ? h('div', { className: 'absolute top-3 right-3' }, h(OcrBadge, { method: st.ocrMethod })) : null,
+      h(FullscreenButton, { onClick: props.onEnterFullscreen, visible: props.canFullscreen })
     );
   }
   return h(Placeholder, { icon: IClipboard, title: '\ube14\ub85d \ud14d\uc2a4\ud2b8', desc: '\uc0c1\ud0dc: ' + st.phase });
@@ -2363,7 +2417,9 @@ function BlockTextSidebar(props) {
           h('span', { className: 'text-sm font-mono text-zinc-300 w-12 text-right' }, st.stabilityThreshold.toFixed(1) + 's')
         )
       ),
-      // Live view toggle
+      h(SbSection, { title: 'OCR \ubc29\ubc95' },
+        h(OcrDropdown, { settings: props.settings, value: st.ocrMethod, onChange: function(v) { d({ type: 'BT_UPDATE', v: { ocrMethod: v } }); } })
+      ),
       h(SbSection, null,
         h('div', { className: 'flex items-center justify-between' },
           h('label', { className: 'text-xs text-zinc-400' }, '라이브 화면'),
@@ -2572,6 +2628,154 @@ function SettingsSidebar(props) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   Fullscreen Mode Components
+   ═══════════════════════════════════════════════════════════════ */
+
+function FullscreenButton(props) {
+  if (!props.visible) return null;
+  return h('button', {
+    className: FS.enterBtn,
+    onClick: props.onClick,
+    title: '전체화면 (F)',
+    'aria-label': '전체화면 (F)',
+  }, h(IMaximize, { size: 20 }));
+}
+
+function FsExitButton(props) {
+  return h('button', {
+    className: FS.exitBtn + ' ' + props.overlayClass,
+    onClick: props.onClick,
+    title: '\uc804\uccb4\ud654\uba74 \ub098\uac00\uae30',
+    'aria-label': '\uc804\uccb4\ud654\uba74 \ub098\uac00\uae30 (Escape)',
+  }, h(IXMark, { size: 18 }));
+}
+
+function FsStatusBadge(props) {
+  var st = props.state;
+  var mode = st.mode;
+  var content = null;
+  var alwaysVisible = false;
+  if (mode === MODES.SC) {
+    var sc = st.scrollCapture;
+    if (sc.phase === 'CAPTURING') {
+      content = h(Fragment, null,
+        h('span', { className: 'text-red-400 mr-1.5' }, '\u25cf'),
+        'REC  ' + fmtTime(sc.elapsedSec) + ' \u00b7 ' + sc.frameCount + 'F'
+      );
+      alwaysVisible = true;
+    }
+  } else if (mode === MODES.BT) {
+    var bt = st.blockText;
+    if (bt.phase === 'MONITORING') {
+      var dotColor = bt.detectStatus === 'detected' ? 'text-cyan-400' : bt.detectStatus === 'stabilizing' ? 'text-blue-400' : 'text-zinc-500';
+      var label = bt.detectStatus === 'detected' ? '\ubcc0\ud654\uac10\uc9c0' : bt.detectStatus === 'stabilizing' ? '\uc120\ud0dd\uac10\uc9c0' : '\ub300\uae30';
+      content = h(Fragment, null,
+        h('span', { className: dotColor + ' mr-1.5' }, bt.detectStatus === 'idle' ? '\u25cb' : '\u25cf'),
+        label
+      );
+    } else if (bt.phase === 'PROCESSING') {
+      content = 'OCR \ucc98\ub9ac \uc911...';
+    }
+  }
+  if (!content) return null;
+  var cls = FS.statusBadge + ' ' + (alwaysVisible ? FS.overlayVisible : props.overlayClass);
+  return h('div', { className: cls, role: 'status', 'aria-live': 'polite', 'aria-label': '\uce21\ucc98 \uc0c1\ud0dc' }, content);
+}
+
+function FsActionButton(props) {
+  var st = props.state;
+  var mode = st.mode;
+  var isCapturing = mode === MODES.SC && st.scrollCapture.phase === 'CAPTURING';
+  var overlayClass = isCapturing ? FS.overlayVisible : props.overlayClass;
+  var el = null;
+  if (mode === MODES.SC) {
+    var sc = st.scrollCapture;
+    if (sc.phase === 'READY') {
+      el = h('button', {
+        className: FS.actionBtn + ' bg-blue-600 hover:bg-blue-500 text-white',
+        onClick: function() { props.onAction('start'); },
+        'aria-label': '\uce21\ucc98 \uc2dc\uc791 (Space)',
+      }, '\u25cf \uce21\ucc98 \uc2dc\uc791');
+    } else if (sc.phase === 'CAPTURING') {
+      el = h('button', {
+        className: FS.actionBtn + ' bg-red-600 hover:bg-red-500 text-white',
+        onClick: function() { props.onAction('stop'); },
+        'aria-label': '\uce21\ucc98 \uc885\ub8cc (Space)',
+      }, '\u25a0 \uce21\ucc98 \uc885\ub8cc  ', h('span', { className: 'text-xs text-white/60' }, 'Space'));
+    }
+  } else if (mode === MODES.BT) {
+    var bt = st.blockText;
+    if (bt.phase === 'MONITORING') {
+      el = h('button', {
+        className: FS.actionBtn + ' bg-zinc-700 hover:bg-zinc-600 text-zinc-200',
+        onClick: function() { props.onAction('stop'); },
+      }, '\u25a0 \uac10\uc9c0 \uc911\ub2e8');
+    } else if (bt.phase === 'PROCESSING') {
+      el = h('button', {
+        className: FS.actionBtn + ' bg-zinc-700 text-zinc-400 cursor-not-allowed',
+        disabled: true,
+      }, 'OCR \ucc98\ub9ac \uc911...');
+    }
+  }
+  if (!el) return null;
+  return h('div', { className: 'fixed bottom-8 left-1/2 -translate-x-1/2 z-[51] ' + overlayClass }, el);
+}
+
+function FullscreenOverlay(props) {
+  var st = props.state;
+  var d = props.dispatch;
+  var overlayTimerRef = useRef(null);
+  var _ov = useState(true);
+  var isOverlayVisible = _ov[0];
+  var setOverlayVisible = _ov[1];
+  var isCapturing = st.mode === MODES.SC && st.scrollCapture.phase === 'CAPTURING';
+
+  function resetOverlayTimer() {
+    setOverlayVisible(true);
+    clearTimeout(overlayTimerRef.current);
+    overlayTimerRef.current = setTimeout(function() {
+      setOverlayVisible(false);
+    }, 3000);
+  }
+
+  useEffect(function() {
+    function onMouseMove() { resetOverlayTimer(); }
+    function onKeyDown() { resetOverlayTimer(); }
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('keydown', onKeyDown);
+    resetOverlayTimer();
+    return function() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
+  var overlayClass = isCapturing ? FS.overlayVisible : (isOverlayVisible ? FS.overlayVisible : FS.overlayHidden);
+
+  function onAction(action) {
+    if (st.mode === MODES.SC) {
+      if (action === 'start' && props.onStartCapture) props.onStartCapture();
+      if (action === 'stop' && props.onStopCapture) props.onStopCapture();
+    } else if (st.mode === MODES.BT) {
+      if (action === 'start' && props.onStartBlockText) props.onStartBlockText();
+      if (action === 'stop' && props.onStopBlockText) props.onStopBlockText();
+    }
+  }
+
+  function exitFullscreen() {
+    d({ type: 'SET_FULLSCREEN', v: false });
+  }
+
+  if (!st.isFullscreen) return null;
+
+  return h(Fragment, null,
+    h(FsExitButton, { onClick: exitFullscreen, overlayClass: overlayClass }),
+    h(FsStatusBadge, { state: st, overlayClass: overlayClass }),
+    h(FsActionButton, { state: st, onAction: onAction, overlayClass: overlayClass })
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
    TopBar
    ═══════════════════════════════════════════════════════════════ */
 
@@ -2710,9 +2914,55 @@ function StatusBar(props) {
    Content & Sidebar Switches
    ═══════════════════════════════════════════════════════════════ */
 
+var SIDEBAR_MIN = 180;
+var SIDEBAR_MAX = 480;
+var SIDEBAR_DEFAULT = 280;
+
+function SidebarResizeHandle(props) {
+  var dragging = useRef(false);
+  var startX = useRef(0);
+  var startW = useRef(0);
+
+  function onMouseDown(e) {
+    e.preventDefault();
+    dragging.current = true;
+    startX.current = e.clientX;
+    startW.current = props.width;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+  function onMouseMove(e) {
+    if (!dragging.current) return;
+    var w = startW.current + (e.clientX - startX.current);
+    props.onChange(Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w)));
+  }
+
+  function onMouseUp() {
+    dragging.current = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+    if (props.onCommit) props.onCommit();
+  }
+
+  return h('div', {
+    className: 'w-1 cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 transition-colors flex-shrink-0 relative group',
+    onMouseDown: onMouseDown,
+    role: 'separator',
+    'aria-orientation': 'vertical',
+    'aria-label': '\uC0AC\uC774\uB4DC\uBC14 \uD06C\uAE30 \uC870\uC808',
+  },
+    h('div', { className: 'absolute inset-y-0 -left-1 -right-1 group-hover:bg-blue-500/20' })
+  );
+}
+
 function MainContent(props) {
   var st = props.state;
-  var dp = { stream: props.stream, resolution: st.device.resolution, fps: st.device.fps, deviceConnected: st.device.connected, videoRef: props.videoRef, needsPermission: st.device.needsPermission, permissionDenied: st.device.permissionDenied, onRequestPermission: props.onRequestPermission };
+  var dp = { stream: props.stream, resolution: st.device.resolution, fps: st.device.fps, deviceConnected: st.device.connected, videoRef: props.videoRef, needsPermission: st.device.needsPermission, permissionDenied: st.device.permissionDenied, onRequestPermission: props.onRequestPermission, isFullscreen: props.isFullscreen, canFullscreen: props.canFullscreen, onEnterFullscreen: function() { props.dispatch({ type: 'SET_FULLSCREEN', v: true }); }, onDoubleClickVideo: function() { if (props.isFullscreen) { props.dispatch({ type: 'SET_FULLSCREEN', v: false }); } else if (props.canFullscreen) { props.dispatch({ type: 'SET_FULLSCREEN', v: true }); } } };
   var content;
   switch (st.mode) {
     case MODES.SC:  content = h(ScrollCaptureMain, Object.assign({ state: st.scrollCapture, dispatch: props.dispatch, onCopyText: props.onCopyText, onDownloadText: props.onDownloadText }, dp)); break;
@@ -2737,7 +2987,7 @@ function SidebarSwitch(props) {
     case MODES.SET: content = h(SettingsSidebar, { state: st.settings, dispatch: props.dispatch }); break;
     default: content = null;
   }
-  return h('div', { className: S.sidebar }, content);
+  return h('div', { className: S.sidebar, style: props.style }, content);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -2785,6 +3035,14 @@ function App() {
   var toasts = toastState[0];
   var setToasts = toastState[1];
   var toastIdRef = useRef(0);
+
+  // Sidebar width state
+  var sbwState = useState(function() {
+    try { var v = parseInt(localStorage.getItem('scrollsnap_sidebar_w'), 10); return v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : SIDEBAR_DEFAULT; } catch(e) { return SIDEBAR_DEFAULT; }
+  });
+  var sidebarWidth = sbwState[0];
+  var setSidebarWidth = sbwState[1];
+
 
   function addToast(type, message, title) {
     toastIdRef.current++;
@@ -3016,6 +3274,44 @@ function App() {
       localStorage.setItem('scrollsnap_sidebar_prefs', JSON.stringify(prefs));
     } catch(e) {}
   }, [state.mode, state.scrollCapture.direction, state.scrollCapture.ocrMethod, state.scrollCapture.ocrTarget, state.scrollCapture.cropRect, state.blockText.ocrMethod, state.blockText.stabilityThreshold]);
+
+  // Effect 7: Save sidebar width to localStorage on change
+  useEffect(function() {
+    try { localStorage.setItem('scrollsnap_sidebar_w', String(sidebarWidth)); } catch(e) {}
+  }, [sidebarWidth]);
+
+  // Effect 8: Auto-download PNG + copy to clipboard when scroll capture result is ready
+  var prevScPhaseRef = useRef(state.scrollCapture.phase);
+  useEffect(function() {
+    var prev = prevScPhaseRef.current;
+    var cur = state.scrollCapture.phase;
+    prevScPhaseRef.current = cur;
+    if (cur === 'RESULT' && prev !== 'RESULT' && state.scrollCapture.resultCanvas) {
+      var canvas = state.scrollCapture.resultCanvas;
+      var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+      var fname = 'scroll_capture_' + ts;
+      canvas.toBlob(function(blob) {
+        if (!blob) return;
+        // Auto-download
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = fname + '.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+        // Copy to clipboard
+        try {
+          var item = new ClipboardItem({ 'image/png': blob });
+          navigator.clipboard.write([item]).then(function() {
+            addToast('info', '\uC774\uBBF8\uC9C0\uAC00 \uD074\uB9BD\uBCF4\uB4DC\uC5D0 \uBCF5\uC0AC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.', '\uD074\uB9BD\uBCF4\uB4DC \uBCF5\uC0AC');
+          }).catch(function() {});
+        } catch(e) {}
+        addToast('info', fname + '.png \uB2E4\uC6B4\uB85C\uB4DC \uC644\uB8CC', '\uC790\uB3D9 \uB2E4\uC6B4\uB85C\uB4DC');
+      }, 'image/png');
+    }
+  }, [state.scrollCapture.phase, state.scrollCapture.resultCanvas]);
 
   // --- Capture Pipeline Functions ---
 
@@ -3805,6 +4101,24 @@ function App() {
   // Keyboard shortcuts
   useEffect(function() {
     function onKey(e) {
+      // Fullscreen toggle
+      if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        var tag = (document.activeElement || {}).tagName;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+          e.preventDefault();
+          if (state.isFullscreen) {
+            dispatch({ type: 'SET_FULLSCREEN', v: false });
+          } else if (canEnterFullscreen(state)) {
+            dispatch({ type: 'SET_FULLSCREEN', v: true });
+          }
+        }
+      }
+      // Fullscreen exit on Escape
+      if (e.code === 'Escape' && state.isFullscreen) {
+        e.preventDefault();
+        dispatch({ type: 'SET_FULLSCREEN', v: false });
+        return;
+      }
       var sc = state.scrollCapture;
       if (e.code === 'Space' && (sc.phase === 'READY' || sc.phase === 'CAPTURING') && state.mode === MODES.SC) {
         e.preventDefault();
@@ -3831,14 +4145,42 @@ function App() {
     return function() { window.removeEventListener('keydown', onKey); };
   });
 
+  // Fullscreen auto-exit + capture-in-progress notification
+  useEffect(function() {
+    if (state.isFullscreen && shouldAutoExitFullscreen(state)) {
+      dispatch({ type: 'SET_FULLSCREEN', v: false });
+    }
+  });
+
+  var prevFullscreenRef = useRef(false);
+  useEffect(function() {
+    var wasFull = prevFullscreenRef.current;
+    prevFullscreenRef.current = state.isFullscreen;
+    if (wasFull && !state.isFullscreen && state.mode === MODES.SC && state.scrollCapture.phase === 'CAPTURING') {
+      addToast('info', '캡처가 아직 진행 중입니다. Space 키 또는 종료 버튼으로 캡처를 종료하세요.', '캡처 진행 중');
+    }
+  });
+
+  var canFs = canEnterFullscreen(state);
+
   return h(ViewportGuard, null,
     h('div', { className: 'h-full flex flex-col bg-zinc-900' },
-      h(TopBar, { mode: state.mode, dispatch: dispatch }),
+      !state.isFullscreen ? h(TopBar, { mode: state.mode, dispatch: dispatch }) : null,
       h('div', { className: S.mainLayout },
-        h(SidebarSwitch, { state: state, dispatch: dispatch, onStartCapture: startCapture, onStopCapture: stopCapture, onCancelAssemble: cancelAssemble, onStartOcr: scStartOcr, onCancelOcr: scCancelOcr, onCopyText: scCopyText, onDownloadText: scDownloadText, onStartReceive: startReceive, onStopReceive: stopReceive, onDownloadFile: downloadReceivedFile, onNewReceive: newReceive, onStartBlockText: startBlockText, onStopBlockText: stopBlockText, onClearHistory: btClearHistory }),
-        h(MainContent, { state: state, stream: stream, videoRef: videoRef, dispatch: dispatch, onCopyText: scCopyText, onDownloadText: scDownloadText, onRequestPermission: requestCameraPermission })
+        !state.isFullscreen ? h(SidebarSwitch, { state: state, dispatch: dispatch, style: { width: sidebarWidth + 'px' }, onStartCapture: startCapture, onStopCapture: stopCapture, onCancelAssemble: cancelAssemble, onStartOcr: scStartOcr, onCancelOcr: scCancelOcr, onCopyText: scCopyText, onDownloadText: scDownloadText, onStartReceive: startReceive, onStopReceive: stopReceive, onDownloadFile: downloadReceivedFile, onNewReceive: newReceive, onStartBlockText: startBlockText, onStopBlockText: stopBlockText, onClearHistory: btClearHistory }) : null,
+        !state.isFullscreen ? h(SidebarResizeHandle, { width: sidebarWidth, onChange: setSidebarWidth }) : null,
+        h(MainContent, { state: state, stream: stream, videoRef: videoRef, dispatch: dispatch, onCopyText: scCopyText, onDownloadText: scDownloadText, onRequestPermission: requestCameraPermission, isFullscreen: state.isFullscreen, canFullscreen: canFs })
       ),
-      h(StatusBar, { state: state }),
+      state.isFullscreen ? h(FullscreenOverlay, {
+        state: state,
+        dispatch: dispatch,
+        onStartCapture: startCapture,
+        onStopCapture: stopCapture,
+        onStartBlockText: startBlockText,
+        onStopBlockText: stopBlockText,
+        addToast: addToast,
+      }) : null,
+      !state.isFullscreen ? h(StatusBar, { state: state }) : null,
       h(ToastContainer, { toasts: toasts, onDismiss: dismissToast })
     )
   );
