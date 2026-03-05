@@ -205,27 +205,20 @@ var OCR_LABELS = {
    ═══════════════════════════════════════════════════════════════ */
 
 var CaptureEngine = {
-  // Convert ImageData to grayscale Uint8Array (half-scale for speed)
-  toGrayHalf: function(imageData) {
+  // Convert ImageData to full-scale grayscale Uint8Array
+  toGray: function(imageData) {
     var w = imageData.width;
     var h = imageData.height;
-    var hw = Math.floor(w / 2);
-    var hh = Math.floor(h / 2);
     var d = imageData.data;
-    var out = new Uint8Array(hw * hh);
-    for (var y = 0; y < hh; y++) {
-      for (var x = 0; x < hw; x++) {
-        var sx = x * 2;
-        var sy = y * 2;
-        var i = (sy * w + sx) * 4;
-        out[y * hw + x] = Math.round(d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114);
-      }
+    var out = new Uint8Array(w * h);
+    for (var i = 0, j = 0; i < d.length; i += 4, j++) {
+      out[j] = (d[i] * 77 + d[i+1] * 150 + d[i+2] * 29) >> 8;
     }
-    return { data: out, width: hw, height: hh };
+    return { data: out, width: w, height: h };
   },
 
-  // NCC matching: find best vertical offset (deltaY) between prev and curr frames
-  // Returns { deltaY, confidence } where deltaY is in original (full-scale) pixels
+  // NCC matching at full resolution with sparse sampling.
+  // Returns { deltaY, confidence } where deltaY is in pixels.
   nccMatch: function(prevGray, currGray, direction) {
     var isVert = direction !== 'horizontal';
     var w = prevGray.width;
@@ -233,48 +226,46 @@ var CaptureEngine = {
     var pd = prevGray.data;
     var cd = currGray.data;
 
-    // Search range: 0 to 50% of height (vertical) or width (horizontal)
-    var maxShift = Math.floor((isVert ? h : w) * 0.5);
-    var minShift = 2; // 4px full-scale minimum to avoid noise
+    // Search range: 4px to 60% of dimension
+    var maxShift = Math.floor((isVert ? h : w) * 0.6);
+    var minShift = 4;
     var bestNCC = -1;
     var bestShift = 0;
 
-    // Store NCC values per shift for post-analysis
-    var nccArr = new Float64Array(maxShift + 1);
-
-    // Use center strip for matching (40% width centered)
-    var stripX0 = Math.floor(w * 0.3);
-    var stripX1 = Math.floor(w * 0.7);
+    // Wide matching strip (80% of width centered) for more distinctive features
+    var stripX0 = Math.floor(w * 0.1);
+    var stripX1 = Math.floor(w * 0.9);
     var stripW = stripX1 - stripX0;
 
+    // Sample step: every 3rd pixel for balance of speed and accuracy
+    var step = 3;
+
     for (var shift = minShift; shift <= maxShift; shift++) {
-      // Compare: prev bottom region vs curr top region
       var overlapH = isVert ? (h - shift) : h;
       var overlapW = isVert ? stripW : (w - shift);
-      if (overlapH < 20 || overlapW < 20) continue;
+      if (overlapH < 40 || overlapW < 40) continue;
 
       var sumP = 0, sumC = 0, sumPP = 0, sumCC = 0, sumPC = 0;
       var n = 0;
-      // Sample every 2nd pixel for speed
-      for (var y = 0; y < overlapH; y += 2) {
-        for (var x = 0; x < overlapW; x += 2) {
-          var px, py, cx, cy;
+      for (var y = 0; y < overlapH; y += step) {
+        for (var x = 0; x < overlapW; x += step) {
+          var px, py, cx2, cy2;
           if (isVert) {
             px = stripX0 + x; py = shift + y;
-            cx = stripX0 + x; cy = y;
+            cx2 = stripX0 + x; cy2 = y;
           } else {
             px = shift + x; py = y;
-            cx = x; cy = y;
+            cx2 = x; cy2 = y;
           }
           var pv = pd[py * w + px];
-          var cv = cd[cy * w + cx];
+          var cv = cd[cy2 * w + cx2];
           sumP += pv; sumC += cv;
           sumPP += pv * pv; sumCC += cv * cv;
           sumPC += pv * cv;
           n++;
         }
       }
-      if (n < 10) continue;
+      if (n < 20) continue;
       var meanP = sumP / n;
       var meanC = sumC / n;
       var varP = sumPP / n - meanP * meanP;
@@ -283,27 +274,13 @@ var CaptureEngine = {
       var denom = Math.sqrt(varP * varC);
       var ncc = denom > 0 ? cov / denom : 0;
 
-      nccArr[shift] = ncc;
       if (ncc > bestNCC) {
         bestNCC = ncc;
         bestShift = shift;
       }
     }
 
-    // Anti-periodic: find the SMALLEST shift within 5% of the global max NCC.
-    // For periodic content (tables), multiple shifts produce high NCC.
-    // The smallest valid shift is most likely the true scroll amount.
-    var nccThreshold = bestNCC * 0.95;
-    var finalShift = bestShift;
-    for (var s = minShift; s < bestShift; s++) {
-      if (nccArr[s] >= nccThreshold) {
-        finalShift = s;
-        break;
-      }
-    }
-
-    // Convert half-scale shift back to full-scale
-    return { deltaY: finalShift * 2, confidence: nccArr[finalShift] || bestNCC };
+    return { deltaY: bestShift, confidence: bestNCC };
   },
 
   // Extract new content strip from current frame based on deltaY
@@ -3350,7 +3327,7 @@ function App() {
 
     // Get frame data from the (possibly cropped) region
     var imgData = cap.ctx.getImageData(cx, cy, cw, ch);
-    var currGray = CaptureEngine.toGrayHalf(imgData);
+    var currGray = CaptureEngine.toGray(imgData);
 
     if (!cap.prevGray) {
       // First frame: save the (possibly cropped) frame as the initial strip
