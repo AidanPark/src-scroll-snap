@@ -280,6 +280,61 @@ var CaptureEngine = {
       }
     }
 
+    // Pass 2 (Fine): step=1, narrow band near seam boundary
+    if (bestShift > 0) {
+      var fineMin = Math.max(minShift, bestShift - 3);
+      var fineMax = Math.min(maxShift, bestShift + 3);
+      var fineBandH = 40;
+      var refinedNCC = -1;
+      var refinedShift = bestShift;
+
+      for (var shift = fineMin; shift <= fineMax; shift++) {
+        var overlapH = isVert ? Math.min(fineBandH, h - shift) : Math.min(fineBandH, h);
+        var overlapW = isVert ? stripW : Math.min(fineBandH, w - shift);
+        if (overlapH < 4 || overlapW < 4) continue;
+
+        var sumP = 0, sumC = 0, sumPP = 0, sumCC = 0, sumPC = 0;
+        var n = 0;
+        for (var y = 0; y < overlapH; y++) {
+          for (var x = 0; x < overlapW; x++) {
+            var px, py, cx2, cy2;
+            if (isVert) {
+              px = stripX0 + x; py = shift + y;
+              cx2 = stripX0 + x; cy2 = y;
+            } else {
+              px = shift + x; py = y;
+              cx2 = x; cy2 = y;
+            }
+            var pv = pd[py * w + px];
+            var cv = cd[cy2 * w + cx2];
+            sumP += pv; sumC += cv;
+            sumPP += pv * pv; sumCC += cv * cv;
+            sumPC += pv * cv;
+            n++;
+          }
+        }
+        if (n < 10) continue;
+        var meanP = sumP / n;
+        var meanC = sumC / n;
+        var varP = sumPP / n - meanP * meanP;
+        var varC = sumCC / n - meanC * meanC;
+        var cov = sumPC / n - meanP * meanC;
+        var denom = Math.sqrt(varP * varC);
+        var ncc = denom > 0 ? cov / denom : 0;
+
+        if (ncc > refinedNCC) {
+          refinedNCC = ncc;
+          refinedShift = shift;
+        }
+      }
+
+      // Accept refined shift if NCC quality is comparable
+      // Keep original bestNCC (full-overlap) as confidence — narrow-band NCC is not comparable
+      if (refinedNCC > bestNCC * 0.95) {
+        bestShift = refinedShift;
+      }
+    }
+
     return { deltaY: bestShift, confidence: bestNCC };
   },
 
@@ -297,6 +352,40 @@ var CaptureEngine = {
       if (stripW <= 0) return null;
       return ctx.getImageData(w - stripW, 0, stripW, h);
     }
+  },
+
+  // Compare bottom rows of refGray with top rows of newGray to find duplicate overlap
+  findOverlapRows: function(refGray, newGray, maxCheck) {
+    var w = Math.min(refGray.width, newGray.width);
+    var rh = refGray.height;
+    var nh = newGray.height;
+    var rd = refGray.data;
+    var nd = newGray.data;
+    var bestOverlap = 0;
+    var bestMSE = 80;
+    for (var ov = 1; ov <= maxCheck; ov++) {
+      if (ov > rh || ov > nh) break;
+      var sum = 0;
+      var count = 0;
+      for (var j = 0; j < ov; j++) {
+        var refRow = rh - ov + j;
+        var newRow = j;
+        for (var x = 0; x < w; x++) {
+          var rv = rd[refRow * refGray.width + x];
+          var nv = nd[newRow * newGray.width + x];
+          var diff = rv - nv;
+          sum += diff * diff;
+          count++;
+        }
+      }
+      if (count === 0) continue;
+      var mse = sum / count;
+      if (mse < bestMSE) {
+        bestMSE = mse;
+        bestOverlap = ov;
+      }
+    }
+    return bestOverlap;
   },
 
   // Merge strips into a chunk Blob and return a Blob URL
@@ -317,7 +406,9 @@ var CaptureEngine = {
     c.width = totalW; c.height = totalH;
     var cx = c.getContext('2d');
     var offset = 0;
+    var boundaries = [];
     for (var i = 0; i < strips.length; i++) {
+      if (i > 0) boundaries.push(offset);
       if (isVert) {
         cx.putImageData(strips[i], 0, offset);
         offset += strips[i].height;
@@ -326,6 +417,53 @@ var CaptureEngine = {
         offset += strips[i].width;
       }
     }
+    // Fix C: Feathered blending at strip boundaries
+    if (boundaries.length > 0) {
+      var blendData = cx.getImageData(0, 0, totalW, totalH);
+      var bPx = blendData.data;
+      var BLEND_ROWS = 2;
+      for (var bi = 0; bi < boundaries.length; bi++) {
+        var by = boundaries[bi];
+        for (var d = 0; d < BLEND_ROWS; d++) {
+          var mixAmt = ((BLEND_ROWS - d) / (BLEND_ROWS + 1)) * 0.35;
+          if (isVert) {
+            var rowA = by - 1 - d;
+            var rowB = by + d;
+            if (rowA < 0 || rowB >= totalH) continue;
+            for (var bx = 0; bx < totalW; bx++) {
+              var idxA = (rowA * totalW + bx) * 4;
+              var idxB = (rowB * totalW + bx) * 4;
+              var rA = bPx[idxA], gA = bPx[idxA+1], bA = bPx[idxA+2];
+              var rB = bPx[idxB], gB = bPx[idxB+1], bB = bPx[idxB+2];
+              bPx[idxA]   = Math.round(rA + (rB - rA) * mixAmt);
+              bPx[idxA+1] = Math.round(gA + (gB - gA) * mixAmt);
+              bPx[idxA+2] = Math.round(bA + (bB - bA) * mixAmt);
+              bPx[idxB]   = Math.round(rB + (rA - rB) * mixAmt);
+              bPx[idxB+1] = Math.round(gB + (gA - gB) * mixAmt);
+              bPx[idxB+2] = Math.round(bB + (bA - bB) * mixAmt);
+            }
+          } else {
+            var colA = by - 1 - d;
+            var colB = by + d;
+            if (colA < 0 || colB >= totalW) continue;
+            for (var ry = 0; ry < totalH; ry++) {
+              var idxA = (ry * totalW + colA) * 4;
+              var idxB = (ry * totalW + colB) * 4;
+              var rA = bPx[idxA], gA = bPx[idxA+1], bA = bPx[idxA+2];
+              var rB = bPx[idxB], gB = bPx[idxB+1], bB = bPx[idxB+2];
+              bPx[idxA]   = Math.round(rA + (rB - rA) * mixAmt);
+              bPx[idxA+1] = Math.round(gA + (gB - gA) * mixAmt);
+              bPx[idxA+2] = Math.round(bA + (bB - bA) * mixAmt);
+              bPx[idxB]   = Math.round(rB + (rA - rB) * mixAmt);
+              bPx[idxB+1] = Math.round(gB + (gA - gB) * mixAmt);
+              bPx[idxB+2] = Math.round(bB + (bA - bB) * mixAmt);
+            }
+          }
+        }
+      }
+      cx.putImageData(blendData, 0, 0);
+    }
+
     c.toBlob(function(blob) {
       var url = URL.createObjectURL(blob);
       callback({ url: url, width: totalW, height: totalH });
@@ -516,19 +654,19 @@ var VisualDecoder = (function() {
     return best;
   }
 
-  // Sample center 10x10 of a cell, return average RGB
+  // Sample center 60% of a cell, return average RGB
   function sampleCell(imgData, cellX, cellY, cellW, cellH) {
     var data = imgData.data;
     var imgW = imgData.width;
-    var marginX = Math.floor((cellW - Math.min(10, cellW)) / 2);
-    var marginY = Math.floor((cellH - Math.min(10, cellH)) / 2);
-    var sampleW = Math.min(10, cellW);
-    var sampleH = Math.min(10, cellH);
+    var innerW = Math.max(1, Math.round(cellW * 0.6));
+    var innerH = Math.max(1, Math.round(cellH * 0.6));
+    var marginX = Math.floor((cellW - innerW) / 2);
+    var marginY = Math.floor((cellH - innerH) / 2);
     var startX = cellX + marginX;
     var startY = cellY + marginY;
     var rSum = 0, gSum = 0, bSum = 0, count = 0;
-    for (var y = startY; y < startY + sampleH; y++) {
-      for (var x = startX; x < startX + sampleW; x++) {
+    for (var y = startY; y < startY + innerH; y++) {
+      for (var x = startX; x < startX + innerW; x++) {
         var idx = (y * imgW + x) * 4;
         rSum += data[idx];
         gSum += data[idx + 1];
@@ -680,14 +818,29 @@ var VisualDecoder = (function() {
     return centroids;
   }
 
-  // Reconstruct file from collected frames
+  // Reconstruct file from collected frames (with majority voting)
   function reconstructFile(framesMap, totalFrames) {
     var totalData = [];
     for (var i = 0; i < totalFrames; i++) {
-      var frameData = framesMap[i];
-      if (!frameData) return null; // missing frame
-      for (var j = 0; j < frameData.length; j++) {
-        totalData.push(frameData[j]);
+      var versions = framesMap[i];
+      if (!versions || versions.length === 0) return null; // missing frame
+      if (versions.length === 1) {
+        // Single decode — use as-is
+        for (var j = 0; j < versions[0].length; j++) totalData.push(versions[0][j]);
+      } else {
+        // Multiple decodes — majority vote per byte
+        var len = versions[0].length;
+        for (var j = 0; j < len; j++) {
+          var counts = {};
+          var bestVal = versions[0][j];
+          var bestCount = 0;
+          for (var v = 0; v < versions.length; v++) {
+            var val = versions[v][j];
+            counts[val] = (counts[val] || 0) + 1;
+            if (counts[val] > bestCount) { bestCount = counts[val]; bestVal = val; }
+          }
+          totalData.push(bestVal);
+        }
       }
     }
     return new Uint8Array(totalData);
@@ -3044,6 +3197,7 @@ function App() {
     chunks: [],
     frameCount: 0,
     consecutiveFails: 0,
+    prevStripBottom: null,
     startTime: 0,
     timerId: null,
     sampleIntervalId: null,
@@ -3333,6 +3487,28 @@ function App() {
       // First frame: save the (possibly cropped) frame as the initial strip
       cap.prevGray = currGray;
       cap.strips.push(imgData);
+      // Store bottom rows for overlap check
+      if (isVert) {
+        var _fbotRows = Math.min(12, currGray.height);
+        var _fbotStart = currGray.height - _fbotRows;
+        var _fbotGray = new Uint8Array(currGray.width * _fbotRows);
+        for (var _fbi = 0; _fbi < _fbotRows; _fbi++) {
+          for (var _fbj = 0; _fbj < currGray.width; _fbj++) {
+            _fbotGray[_fbi * currGray.width + _fbj] = currGray.data[(_fbotStart + _fbi) * currGray.width + _fbj];
+          }
+        }
+        cap.prevStripBottom = { data: _fbotGray, width: currGray.width, height: _fbotRows };
+      } else {
+        var _fbotCols = Math.min(12, currGray.width);
+        var _fcolStart = currGray.width - _fbotCols;
+        var _fbotGray = new Uint8Array(currGray.height * _fbotCols);
+        for (var _fbi = 0; _fbi < _fbotCols; _fbi++) {
+          for (var _fbj = 0; _fbj < currGray.height; _fbj++) {
+            _fbotGray[_fbi * currGray.height + _fbj] = currGray.data[_fbj * currGray.width + _fcolStart + _fbi];
+          }
+        }
+        cap.prevStripBottom = { data: _fbotGray, width: currGray.height, height: _fbotCols };
+      }
       cap.frameCount = 1;
       cap.cropApplied = !!cropRect;
       dispatch({ type: 'SC_UPDATE', v: { frameCount: 1, matchQuality: 1 } });
@@ -3367,7 +3543,84 @@ function App() {
       if (stripW > 0) strip = cap.ctx.getImageData(cx + cw - stripW, cy, stripW, ch);
     }
 
+    // Fix B: Overlap verification and trim
+    if (strip && cap.prevStripBottom) {
+      var _sw = strip.width;
+      var _sh = strip.height;
+      if (isVert) {
+        var _checkH = Math.min(8, _sh);
+        if (_checkH > 0) {
+          var _topGray = new Uint8Array(_sw * _checkH);
+          var _topData = strip.data;
+          for (var _ti = 0; _ti < _checkH; _ti++) {
+            for (var _tj = 0; _tj < _sw; _tj++) {
+              var _tIdx = (_ti * _sw + _tj) * 4;
+              _topGray[_ti * _sw + _tj] = (_topData[_tIdx] * 77 + _topData[_tIdx+1] * 150 + _topData[_tIdx+2] * 29) >> 8;
+            }
+          }
+          var _topObj = { data: _topGray, width: _sw, height: _checkH };
+          var _overlap = CaptureEngine.findOverlapRows(cap.prevStripBottom, _topObj, _checkH);
+          if (_overlap > 0) {
+            var _newH = _sh - _overlap;
+            if (_newH < 2) {
+              strip = null;
+            } else {
+              strip = cap.ctx.getImageData(cx, cy + ch - _newH, cw, _newH);
+            }
+          }
+        }
+      } else {
+        var _checkW = Math.min(8, _sw);
+        if (_checkW > 0) {
+          var _leftGray = new Uint8Array(_sh * _checkW);
+          var _leftData = strip.data;
+          for (var _ti = 0; _ti < _checkW; _ti++) {
+            for (var _tj = 0; _tj < _sh; _tj++) {
+              var _tIdx = (_tj * _sw + _ti) * 4;
+              _leftGray[_ti * _sh + _tj] = (_leftData[_tIdx] * 77 + _leftData[_tIdx+1] * 150 + _leftData[_tIdx+2] * 29) >> 8;
+            }
+          }
+          var _leftObj = { data: _leftGray, width: _sh, height: _checkW };
+          var _overlap = CaptureEngine.findOverlapRows(cap.prevStripBottom, _leftObj, _checkW);
+          if (_overlap > 0) {
+            var _newW = _sw - _overlap;
+            if (_newW < 2) {
+              strip = null;
+            } else {
+              strip = cap.ctx.getImageData(cx + cw - _newW, cy, _newW, ch);
+            }
+          }
+        }
+      }
+    }
+
     if (strip) {
+      // Store bottom rows of accepted strip for next frame overlap check
+      var _psw = strip.width;
+      var _psh = strip.height;
+      if (isVert) {
+        var _botRows = Math.min(12, _psh);
+        var _botStart = _psh - _botRows;
+        var _botGray = new Uint8Array(_psw * _botRows);
+        for (var _bi = 0; _bi < _botRows; _bi++) {
+          for (var _bj = 0; _bj < _psw; _bj++) {
+            var _bIdx = ((_botStart + _bi) * _psw + _bj) * 4;
+            _botGray[_bi * _psw + _bj] = (strip.data[_bIdx] * 77 + strip.data[_bIdx+1] * 150 + strip.data[_bIdx+2] * 29) >> 8;
+          }
+        }
+        cap.prevStripBottom = { data: _botGray, width: _psw, height: _botRows };
+      } else {
+        var _botCols = Math.min(12, _psw);
+        var _colStart = _psw - _botCols;
+        var _botGray = new Uint8Array(_psh * _botCols);
+        for (var _bi = 0; _bi < _botCols; _bi++) {
+          for (var _bj = 0; _bj < _psh; _bj++) {
+            var _bIdx = (_bj * _psw + _colStart + _bi) * 4;
+            _botGray[_bi * _psh + _bj] = (strip.data[_bIdx] * 77 + strip.data[_bIdx+1] * 150 + strip.data[_bIdx+2] * 29) >> 8;
+          }
+        }
+        cap.prevStripBottom = { data: _botGray, width: _psh, height: _botCols };
+      }
       cap.strips.push(strip);
       cap.consecutiveFails = 0;
       cap.frameCount++;
@@ -3414,6 +3667,7 @@ function App() {
     cap.chunks = [];
     cap.frameCount = 0;
     cap.consecutiveFails = 0;
+    cap.prevStripBottom = null;
     cap.startTime = Date.now();
     cap.cropApplied = false;
 
@@ -3592,10 +3846,10 @@ function App() {
               validRate: 0, speedKBs: 0, framesMap: {}, lastFrameNum: -1,
             } });
             if (!rcv.framesMap[checkResult.header.frameNum]) {
-              rcv.framesMap[checkResult.header.frameNum] = checkResult.data;
+              rcv.framesMap[checkResult.header.frameNum] = [checkResult.data];
               rcv.collectedCount = 1; rcv.totalValid = 1;
               dispatch({ type: 'FR_UPDATE', v: { collectedCount: 1, totalValid: 1, lastFrameNum: checkResult.header.frameNum, framesMap: Object.assign({}, rcv.framesMap) } });
-              if (rcv.collectedCount >= rcv.totalFrames) { completeReceive(); return; }
+              if (rcv.collectedCount >= rcv.totalFrames && rcv.loopCount >= 2) { completeReceive(); return; }
             }
           } else {
             rcv.calibrationFrames = 5;
@@ -3619,7 +3873,7 @@ function App() {
         }
         rcv.prevFrameNum = decResult.header.frameNum;
         if (!rcv.framesMap[decResult.header.frameNum]) {
-          rcv.framesMap[decResult.header.frameNum] = decResult.data;
+          rcv.framesMap[decResult.header.frameNum] = [decResult.data];
           rcv.collectedCount++;
           var now = Date.now();
           rcv.speedHistory.push({ t: now, bytes: VisualDecoder.BYTES_PER_FRAME });
@@ -3637,13 +3891,18 @@ function App() {
             lastFrameNum: decResult.header.frameNum,
             framesMap: Object.assign({}, rcv.framesMap),
           } });
-          if (rcv.collectedCount >= rcv.totalFrames) { completeReceive(); }
+          // Complete only after all frames collected AND minimum 2 loops for voting accuracy
+          if (rcv.collectedCount >= rcv.totalFrames && rcv.loopCount >= 2) { completeReceive(); }
         } else {
+          // Additional decode of already-seen frame — store for majority voting
+          rcv.framesMap[decResult.header.frameNum].push(decResult.data);
           var vr2 = rcv.totalProcessed > 0 ? Math.round(rcv.totalValid / rcv.totalProcessed * 100) : 0;
           dispatch({ type: 'FR_UPDATE', v: {
             totalProcessed: rcv.totalProcessed, totalValid: rcv.totalValid,
             validRate: vr2, loopCount: rcv.loopCount, lastFrameNum: decResult.header.frameNum,
           } });
+          // Check completion on loop boundary (all frames seen + 2 loops done)
+          if (rcv.collectedCount >= rcv.totalFrames && rcv.loopCount >= 2) { completeReceive(); }
         }
       } else {
         var vr3 = rcv.totalProcessed > 0 ? Math.round(rcv.totalValid / rcv.totalProcessed * 100) : 0;
