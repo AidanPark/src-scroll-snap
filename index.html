@@ -877,14 +877,23 @@ var OcrEngine = (function() {
   }
 
   function ocrCloudVision(canvas, settings) {
-    var b64 = canvas.toDataURL('image/png').split(',')[1];
+    var b64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
     var hdr = { 'Content-Type': 'application/json' };
     var url = 'https://vision.googleapis.com/v1/images:annotate';
     if (settings.cvAuthType === 'apiKey') url += '?key=' + encodeURIComponent(settings.cvApiKey);
     else hdr['Authorization'] = 'Bearer ' + settings.cvOauthToken;
-    return fetch(url, { method: 'POST', headers: hdr, body: JSON.stringify({ requests: [{ image: { content: b64 }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] }) })
+    var reqBody = JSON.stringify({ requests: [{ image: { content: b64 }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] });
+    if (reqBody.length > 9.5 * 1024 * 1024) {
+      return Promise.reject(new Error('Cloud Vision request too large (' + (reqBody.length / 1024 / 1024).toFixed(1) + 'MB > 10MB limit). Image chunk may be too complex.'));
+    }
+    return fetch(url, { method: 'POST', headers: hdr, body: reqBody })
       .then(function(r) { if (!r.ok) throw new Error('Cloud Vision HTTP ' + r.status); return r.json(); })
-      .then(function(d) { return (d.responses && d.responses[0] && d.responses[0].fullTextAnnotation) ? d.responses[0].fullTextAnnotation.text : ''; });
+      .then(function(d) {
+        var resp = d.responses && d.responses[0];
+        if (!resp) throw new Error('Cloud Vision: empty response');
+        if (resp.error) throw new Error('Cloud Vision API error: ' + (resp.error.message || 'code ' + resp.error.code));
+        return resp.fullTextAnnotation ? resp.fullTextAnnotation.text : '';
+      });
   }
 
   function ocrLlmVision(canvas, settings, forceProvider) {
@@ -921,16 +930,33 @@ var OcrEngine = (function() {
     var chunks = chunkCanvas(canvas, maxH);
     var total = chunks.length;
     var texts = [];
+    var failedChunks = [];
     var idx = 0;
     function next() {
-      if (idx >= total) return Promise.resolve(texts.join('\n'));
+      if (idx >= total) {
+        var result = texts.join('\n');
+        if (failedChunks.length > 0) {
+          console.warn('OCR: ' + failedChunks.length + '/' + total + ' chunks failed:', failedChunks);
+          result += '\n\n[OCR 경고: ' + total + '개 청크 중 ' + failedChunks.length + '개 실패 (' + failedChunks.map(function(f) { return '청크' + f.idx + ': ' + f.err; }).join(', ') + ')]';
+        }
+        return Promise.resolve(result);
+      }
       onProgress(idx, total);
+      var chunkIdx = idx;
       var chunk = chunks[idx]; idx++;
       var p;
       if (engine === 'tesseract') p = ocrTesseract(chunk);
       else if (engine === 'cloud-vision') p = ocrCloudVision(chunk, settings);
       else p = ocrLlmVision(chunk, settings, llmProvider);
-      return p.then(function(text) { texts.push(text); return next(); });
+      return p.then(function(text) {
+        texts.push(text);
+        return next();
+      }).catch(function(err) {
+        console.warn('OCR chunk ' + (chunkIdx + 1) + '/' + total + ' failed:', err.message);
+        failedChunks.push({ idx: chunkIdx + 1, err: err.message });
+        texts.push('[청크 ' + (chunkIdx + 1) + ' OCR 실패: ' + err.message + ']');
+        return next();
+      });
     }
     return next();
   }
@@ -3965,19 +3991,8 @@ function App() {
     var sc = state.scrollCapture;
     if (!sc.resultCanvas) return;
     ocrCancelledRef.current = false;
-    // Crop if manual target
+    // OCR always uses the full resultCanvas — crop was already applied during capture
     var ocrCanvas = sc.resultCanvas;
-    if (sc.ocrTarget === 'manual' && sc.cropRect) {
-      var r = sc.cropRect;
-      var sx = Math.round(sc.resultWidth * r.x / 100);
-      var sy = Math.round(sc.resultHeight * r.y / 100);
-      var sw = Math.round(sc.resultWidth * r.w / 100);
-      var sh = Math.round(sc.resultHeight * r.h / 100);
-      var cropC = document.createElement('canvas');
-      cropC.width = sw; cropC.height = sh;
-      cropC.getContext('2d').drawImage(sc.resultCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-      ocrCanvas = cropC;
-    }
     dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_PROCESSING', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '' } });
     OcrEngine.performOcr(ocrCanvas, sc.ocrMethod, state.settings, function(idx, total) {
       if (ocrCancelledRef.current) return;
