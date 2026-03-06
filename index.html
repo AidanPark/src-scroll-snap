@@ -1356,13 +1356,50 @@ function CropRectOverlay(props) {
   var dragRef = useRef({ type: null, sx: 0, sy: 0, sr: null, cw: 0, ch: 0 });
   var containerRef = useRef(null);
 
+  function getVideoBounds() {
+    var c = containerRef.current;
+    var v = props.videoRef && props.videoRef.current;
+    if (!c || !v || !v.videoWidth) return null;
+    var cRect = c.getBoundingClientRect();
+    var scale = Math.min(cRect.width / v.videoWidth, cRect.height / v.videoHeight);
+    var dw = v.videoWidth * scale;
+    var dh = v.videoHeight * scale;
+    return { x: (cRect.width - dw) / 2, y: (cRect.height - dh) / 2, w: dw, h: dh };
+  }
+
+  var videoBoundsState = useState(null);
+  var videoBounds = videoBoundsState[0];
+  var setVideoBounds = videoBoundsState[1];
+
+  useEffect(function() {
+    function update() {
+      var c = containerRef.current;
+      var v = props.videoRef && props.videoRef.current;
+      if (!c || !v || !v.videoWidth) { setVideoBounds(null); return; }
+      var cRect = c.getBoundingClientRect();
+      var scale = Math.min(cRect.width / v.videoWidth, cRect.height / v.videoHeight);
+      var dw = v.videoWidth * scale;
+      var dh = v.videoHeight * scale;
+      setVideoBounds({ x: (cRect.width - dw) / 2, y: (cRect.height - dh) / 2, w: dw, h: dh });
+    }
+    update();
+    var ro = new ResizeObserver(update);
+    if (containerRef.current) ro.observe(containerRef.current);
+    var v = props.videoRef && props.videoRef.current;
+    if (v) v.addEventListener('loadedmetadata', update);
+    return function() { ro.disconnect(); if (v) v.removeEventListener('loadedmetadata', update); };
+  }, [props.videoRef]);
+
   function pct(px, total) { return (px / total) * 100; }
 
   function onDown(e, type) {
     e.preventDefault(); e.stopPropagation();
     var c = containerRef.current; if (!c) return;
-    var b = c.getBoundingClientRect();
-    dragRef.current = { type: type, sx: e.clientX, sy: e.clientY, sr: Object.assign({}, rect), cw: b.width, ch: b.height };
+    var vb = getVideoBounds();
+    var dragCw, dragCh;
+    if (vb) { dragCw = vb.w; dragCh = vb.h; }
+    else { var b = c.getBoundingClientRect(); dragCw = b.width; dragCh = b.height; }
+    dragRef.current = { type: type, sx: e.clientX, sy: e.clientY, sr: Object.assign({}, rect), cw: dragCw, ch: dragCh };
     function onMove(ev) {
       var d = dragRef.current; if (!d.type) return;
       var dx = pct(ev.clientX - d.sx, d.cw);
@@ -1394,10 +1431,23 @@ function CropRectOverlay(props) {
   var hBase = { width: hs + 'px', height: hs + 'px' };
   function hStyle(pos) { return Object.assign({}, hBase, pos); }
 
+  var cropStyle;
+  if (videoBounds) {
+    cropStyle = {
+      left: (videoBounds.x + rect.x / 100 * videoBounds.w) + 'px',
+      top: (videoBounds.y + rect.y / 100 * videoBounds.h) + 'px',
+      width: (rect.w / 100 * videoBounds.w) + 'px',
+      height: (rect.h / 100 * videoBounds.h) + 'px',
+      cursor: 'move'
+    };
+  } else {
+    cropStyle = { left: rect.x + '%', top: rect.y + '%', width: rect.w + '%', height: rect.h + '%', cursor: 'move' };
+  }
+
   return h('div', { ref: containerRef, className: 'absolute inset-0 z-10' },
     h('div', {
       className: 'absolute border-2 border-dashed border-blue-400 bg-blue-400/10',
-      style: { left: rect.x + '%', top: rect.y + '%', width: rect.w + '%', height: rect.h + '%', cursor: 'move' },
+      style: cropStyle,
       onMouseDown: function(e) { onDown(e, 'move'); },
     },
       h('div', { className: 'absolute -top-5 left-0 text-[10px] font-mono text-blue-400 bg-zinc-900/80 px-1 rounded pointer-events-none select-none' }, 'OCR \uC601\uC5ED'),
@@ -1409,6 +1459,61 @@ function CropRectOverlay(props) {
       h('div', { className: hCls, style: hStyle({ bottom: ho + 'px', left: '50%', marginLeft: ho + 'px', cursor: 's-resize' }), onMouseDown: function(e) { onDown(e, 's'); } }),
       h('div', { className: hCls, style: hStyle({ top: '50%', left: ho + 'px', marginTop: ho + 'px', cursor: 'w-resize' }), onMouseDown: function(e) { onDown(e, 'w'); } }),
       h('div', { className: hCls, style: hStyle({ top: '50%', right: ho + 'px', marginTop: ho + 'px', cursor: 'e-resize' }), onMouseDown: function(e) { onDown(e, 'e'); } })
+    )
+  );
+}
+
+function CaptureCropIndicator(props) {
+  var rect = props.rect;
+  if (!rect) return null;
+  var containerRef = useRef(null);
+  var videoBoundsState = useState(null);
+  var videoBounds = videoBoundsState[0];
+  var setVideoBounds = videoBoundsState[1];
+
+  useEffect(function() {
+    function update() {
+      var c = containerRef.current;
+      var v = props.videoRef && props.videoRef.current;
+      if (!c || !v || !v.videoWidth) { setVideoBounds(null); return; }
+      var cRect = c.getBoundingClientRect();
+      var scale = Math.min(cRect.width / v.videoWidth, cRect.height / v.videoHeight);
+      var dw = v.videoWidth * scale;
+      var dh = v.videoHeight * scale;
+      setVideoBounds({ x: (cRect.width - dw) / 2, y: (cRect.height - dh) / 2, w: dw, h: dh });
+    }
+    update();
+    var ro = new ResizeObserver(update);
+    if (containerRef.current) ro.observe(containerRef.current);
+    var v = props.videoRef && props.videoRef.current;
+    if (v) v.addEventListener('loadedmetadata', update);
+    return function() { ro.disconnect(); if (v) v.removeEventListener('loadedmetadata', update); };
+  }, [props.videoRef]);
+
+  var cropStyle;
+  if (videoBounds) {
+    cropStyle = {
+      left: (videoBounds.x + rect.x / 100 * videoBounds.w) + 'px',
+      top: (videoBounds.y + rect.y / 100 * videoBounds.h) + 'px',
+      width: (rect.w / 100 * videoBounds.w) + 'px',
+      height: (rect.h / 100 * videoBounds.h) + 'px',
+      boxShadow: '0 0 0 9999px rgba(0,0,0,0.4)'
+    };
+  } else {
+    cropStyle = {
+      left: rect.x + '%', top: rect.y + '%',
+      width: rect.w + '%', height: rect.h + '%',
+      boxShadow: '0 0 0 9999px rgba(0,0,0,0.4)'
+    };
+  }
+
+  return h('div', { ref: containerRef, className: 'absolute inset-0 pointer-events-none z-10' },
+    h('div', { className: 'absolute inset-0 bg-black/40' }),
+    h('div', {
+      className: 'absolute border-2 border-red-500 shadow-[0_0_0_1px_rgba(239,68,68,0.3)]',
+      style: cropStyle
+    },
+      h('div', { className: 'absolute -top-5 left-0 text-[10px] font-mono text-red-400 bg-zinc-900/80 px-1 rounded select-none' }, 'REC \uC601\uC5ED')
     )
   );
 }
@@ -1458,7 +1563,8 @@ function ScrollCaptureMain(props) {
       // Crop rectangle overlay (manual OCR target)
       st.ocrTarget === 'manual' && st.cropRect ? h(CropRectOverlay, {
         rect: st.cropRect,
-        onChange: function(r) { props.dispatch({ type: 'SC_UPDATE', v: { cropRect: r } }); }
+        onChange: function(r) { props.dispatch({ type: 'SC_UPDATE', v: { cropRect: r } }); },
+        videoRef: props.videoRef
       }) : null,
       h(FullscreenButton, { onClick: function() { props.dispatch({ type: 'SET_FULLSCREEN', v: true }); }, visible: props.canFullscreen }),
     );
@@ -1477,21 +1583,7 @@ function ScrollCaptureMain(props) {
         className: 'flex-1 object-contain bg-black min-h-0',
       }),
       // Crop area indicator during capture (read-only, no drag handles)
-      hasCrop ? h('div', { className: 'absolute inset-0 pointer-events-none z-10' },
-        // Dimmed overlay outside crop area
-        h('div', { className: 'absolute inset-0 bg-black/40' }),
-        // Clear window for crop area with red border
-        h('div', {
-          className: 'absolute border-2 border-red-500 shadow-[0_0_0_1px_rgba(239,68,68,0.3)]',
-          style: {
-            left: st.cropRect.x + '%', top: st.cropRect.y + '%',
-            width: st.cropRect.w + '%', height: st.cropRect.h + '%',
-            boxShadow: '0 0 0 9999px rgba(0,0,0,0.4)',
-          }
-        },
-          h('div', { className: 'absolute -top-5 left-0 text-[10px] font-mono text-red-400 bg-zinc-900/80 px-1 rounded select-none' }, 'REC \uC601\uC5ED')
-        )
-      ) : h('div', { className: 'absolute inset-0 border-2 border-red-500 pointer-events-none' }),
+      hasCrop ? h(CaptureCropIndicator, { rect: st.cropRect, videoRef: props.videoRef }) : h('div', { className: 'absolute inset-0 border-2 border-red-500 pointer-events-none' }),
       props.resolution ? h('div', { className: 'absolute bottom-2 left-3 text-xs font-mono text-zinc-500 z-20' },
         props.resolution + (props.fps ? ' @ ' + props.fps + 'fps' : '')
       ) : null,
