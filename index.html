@@ -354,40 +354,6 @@ var CaptureEngine = {
     }
   },
 
-  // Compare bottom rows of refGray with top rows of newGray to find duplicate overlap
-  findOverlapRows: function(refGray, newGray, maxCheck) {
-    var w = Math.min(refGray.width, newGray.width);
-    var rh = refGray.height;
-    var nh = newGray.height;
-    var rd = refGray.data;
-    var nd = newGray.data;
-    var bestOverlap = 0;
-    var bestMSE = 80;
-    for (var ov = 1; ov <= maxCheck; ov++) {
-      if (ov > rh || ov > nh) break;
-      var sum = 0;
-      var count = 0;
-      for (var j = 0; j < ov; j++) {
-        var refRow = rh - ov + j;
-        var newRow = j;
-        for (var x = 0; x < w; x++) {
-          var rv = rd[refRow * refGray.width + x];
-          var nv = nd[newRow * newGray.width + x];
-          var diff = rv - nv;
-          sum += diff * diff;
-          count++;
-        }
-      }
-      if (count === 0) continue;
-      var mse = sum / count;
-      if (mse < bestMSE) {
-        bestMSE = mse;
-        bestOverlap = ov;
-      }
-    }
-    return bestOverlap;
-  },
-
   // Merge strips into a chunk Blob and return a Blob URL
   mergeStripsToBlob: function(strips, direction, callback) {
     var isVert = direction !== 'horizontal';
@@ -3197,7 +3163,6 @@ function App() {
     chunks: [],
     frameCount: 0,
     consecutiveFails: 0,
-    prevStripBottom: null,
     startTime: 0,
     timerId: null,
     sampleIntervalId: null,
@@ -3487,28 +3452,6 @@ function App() {
       // First frame: save the (possibly cropped) frame as the initial strip
       cap.prevGray = currGray;
       cap.strips.push(imgData);
-      // Store bottom rows for overlap check
-      if (isVert) {
-        var _fbotRows = Math.min(12, currGray.height);
-        var _fbotStart = currGray.height - _fbotRows;
-        var _fbotGray = new Uint8Array(currGray.width * _fbotRows);
-        for (var _fbi = 0; _fbi < _fbotRows; _fbi++) {
-          for (var _fbj = 0; _fbj < currGray.width; _fbj++) {
-            _fbotGray[_fbi * currGray.width + _fbj] = currGray.data[(_fbotStart + _fbi) * currGray.width + _fbj];
-          }
-        }
-        cap.prevStripBottom = { data: _fbotGray, width: currGray.width, height: _fbotRows };
-      } else {
-        var _fbotCols = Math.min(12, currGray.width);
-        var _fcolStart = currGray.width - _fbotCols;
-        var _fbotGray = new Uint8Array(currGray.height * _fbotCols);
-        for (var _fbi = 0; _fbi < _fbotCols; _fbi++) {
-          for (var _fbj = 0; _fbj < currGray.height; _fbj++) {
-            _fbotGray[_fbi * currGray.height + _fbj] = currGray.data[_fbj * currGray.width + _fcolStart + _fbi];
-          }
-        }
-        cap.prevStripBottom = { data: _fbotGray, width: currGray.height, height: _fbotCols };
-      }
       cap.frameCount = 1;
       cap.cropApplied = !!cropRect;
       dispatch({ type: 'SC_UPDATE', v: { frameCount: 1, matchQuality: 1 } });
@@ -3543,84 +3486,8 @@ function App() {
       if (stripW > 0) strip = cap.ctx.getImageData(cx + cw - stripW, cy, stripW, ch);
     }
 
-    // Fix B: Overlap verification and trim
-    if (strip && cap.prevStripBottom) {
-      var _sw = strip.width;
-      var _sh = strip.height;
-      if (isVert) {
-        var _checkH = Math.min(8, _sh);
-        if (_checkH > 0) {
-          var _topGray = new Uint8Array(_sw * _checkH);
-          var _topData = strip.data;
-          for (var _ti = 0; _ti < _checkH; _ti++) {
-            for (var _tj = 0; _tj < _sw; _tj++) {
-              var _tIdx = (_ti * _sw + _tj) * 4;
-              _topGray[_ti * _sw + _tj] = (_topData[_tIdx] * 77 + _topData[_tIdx+1] * 150 + _topData[_tIdx+2] * 29) >> 8;
-            }
-          }
-          var _topObj = { data: _topGray, width: _sw, height: _checkH };
-          var _overlap = CaptureEngine.findOverlapRows(cap.prevStripBottom, _topObj, _checkH);
-          if (_overlap > 0) {
-            var _newH = _sh - _overlap;
-            if (_newH < 2) {
-              strip = null;
-            } else {
-              strip = cap.ctx.getImageData(cx, cy + ch - _newH, cw, _newH);
-            }
-          }
-        }
-      } else {
-        var _checkW = Math.min(8, _sw);
-        if (_checkW > 0) {
-          var _leftGray = new Uint8Array(_sh * _checkW);
-          var _leftData = strip.data;
-          for (var _ti = 0; _ti < _checkW; _ti++) {
-            for (var _tj = 0; _tj < _sh; _tj++) {
-              var _tIdx = (_tj * _sw + _ti) * 4;
-              _leftGray[_ti * _sh + _tj] = (_leftData[_tIdx] * 77 + _leftData[_tIdx+1] * 150 + _leftData[_tIdx+2] * 29) >> 8;
-            }
-          }
-          var _leftObj = { data: _leftGray, width: _sh, height: _checkW };
-          var _overlap = CaptureEngine.findOverlapRows(cap.prevStripBottom, _leftObj, _checkW);
-          if (_overlap > 0) {
-            var _newW = _sw - _overlap;
-            if (_newW < 2) {
-              strip = null;
-            } else {
-              strip = cap.ctx.getImageData(cx + cw - _newW, cy, _newW, ch);
-            }
-          }
-        }
-      }
-    }
 
     if (strip) {
-      // Store bottom rows of accepted strip for next frame overlap check
-      var _psw = strip.width;
-      var _psh = strip.height;
-      if (isVert) {
-        var _botRows = Math.min(12, _psh);
-        var _botStart = _psh - _botRows;
-        var _botGray = new Uint8Array(_psw * _botRows);
-        for (var _bi = 0; _bi < _botRows; _bi++) {
-          for (var _bj = 0; _bj < _psw; _bj++) {
-            var _bIdx = ((_botStart + _bi) * _psw + _bj) * 4;
-            _botGray[_bi * _psw + _bj] = (strip.data[_bIdx] * 77 + strip.data[_bIdx+1] * 150 + strip.data[_bIdx+2] * 29) >> 8;
-          }
-        }
-        cap.prevStripBottom = { data: _botGray, width: _psw, height: _botRows };
-      } else {
-        var _botCols = Math.min(12, _psw);
-        var _colStart = _psw - _botCols;
-        var _botGray = new Uint8Array(_psh * _botCols);
-        for (var _bi = 0; _bi < _botCols; _bi++) {
-          for (var _bj = 0; _bj < _psh; _bj++) {
-            var _bIdx = (_bj * _psw + _colStart + _bi) * 4;
-            _botGray[_bi * _psh + _bj] = (strip.data[_bIdx] * 77 + strip.data[_bIdx+1] * 150 + strip.data[_bIdx+2] * 29) >> 8;
-          }
-        }
-        cap.prevStripBottom = { data: _botGray, width: _psh, height: _botCols };
-      }
       cap.strips.push(strip);
       cap.consecutiveFails = 0;
       cap.frameCount++;
@@ -3667,7 +3534,6 @@ function App() {
     cap.chunks = [];
     cap.frameCount = 0;
     cap.consecutiveFails = 0;
-    cap.prevStripBottom = null;
     cap.startTime = Date.now();
     cap.cropApplied = false;
 
