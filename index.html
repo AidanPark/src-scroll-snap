@@ -182,7 +182,7 @@ var IXMark = mkIcon([
    State Management
    ═══════════════════════════════════════════════════════════════ */
 
-var APP_VERSION = '0.2.5';
+var APP_VERSION = '0.2.7';
 
 var MODES = {
   SC: 'scroll-capture',
@@ -201,11 +201,11 @@ var OCR_LABELS = {
 };
 
 /* ═══════════════════════════════════════════════════════════════
-   Capture Engine — NCC Matching + Progressive Strip Extraction
+   Capture Engine — Row SAD Matching + Progressive Strip Extraction
    ═══════════════════════════════════════════════════════════════ */
 
 var CaptureEngine = {
-  // Convert ImageData to full-scale grayscale Uint8Array
+  // Convert ImageData to grayscale Uint8Array
   toGray: function(imageData) {
     var w = imageData.width;
     var h = imageData.height;
@@ -217,125 +217,472 @@ var CaptureEngine = {
     return { data: out, width: w, height: h };
   },
 
-  // NCC matching at full resolution with sparse sampling.
-  // Returns { deltaY, confidence } where deltaY is in pixels.
-  nccMatch: function(prevGray, currGray, direction) {
+  // Row-based SAD matching with early exit.
+  // Finds distinctive reference rows near the bottom of prevGray, then locates them in currGray.
+  // hintDeltaY: previous frame's deltaY (0 if unknown) — narrows search range.
+  // Returns { deltaY, confidence } where deltaY = new content height in pixels.
+  rowMatch: function(prevGray, currGray, direction, hintDeltaY) {
     var isVert = direction !== 'horizontal';
     var w = prevGray.width;
     var h = prevGray.height;
     var pd = prevGray.data;
     var cd = currGray.data;
 
-    // Search range: 4px to 60% of dimension
-    var maxShift = Math.floor((isVert ? h : w) * 0.6);
-    var minShift = 4;
-    var bestNCC = -1;
-    var bestShift = 0;
+    var BAIL_PER_PIXEL = 30;
+    var VALIDATE_ROWS = 30;
+    var VALIDATE_MAX_AVG = 20;
+    var MIN_VARIANCE = 50;           // lowered: Swagger UI has sparse text on white bg
+    var STRIP_W = 80;          // each L/C/R strip width in pixels
+    // UNIQUENESS test removed — too strict for repeating UI patterns (Swagger)
 
-    // Wide matching strip (80% of width centered) for more distinctive features
-    var stripX0 = Math.floor(w * 0.1);
-    var stripX1 = Math.floor(w * 0.9);
-    var stripW = stripX1 - stripX0;
+    if (isVert) {
+      // --- L/C/R strip positions (3 horizontal strips) ---
+      var strips = [
+        { x0: Math.max(0, (w * 0.2 - STRIP_W / 2) | 0) },
+        { x0: Math.max(0, (w * 0.5 - STRIP_W / 2) | 0) },
+        { x0: Math.max(0, (w * 0.8 - STRIP_W / 2) | 0) },
+      ];
+      var sw = Math.min(STRIP_W, w);  // actual strip width
+      for (var si = 0; si < strips.length; si++) {
+        if (strips[si].x0 + sw > w) strips[si].x0 = w - sw;
+      }
 
-    // Sample step: every 3rd pixel for balance of speed and accuracy
-    var step = 3;
-
-    for (var shift = minShift; shift <= maxShift; shift++) {
-      var overlapH = isVert ? (h - shift) : h;
-      var overlapW = isVert ? stripW : (w - shift);
-      if (overlapH < 40 || overlapW < 40) continue;
-
-      var sumP = 0, sumC = 0, sumPP = 0, sumCC = 0, sumPC = 0;
-      var n = 0;
-      for (var y = 0; y < overlapH; y += step) {
-        for (var x = 0; x < overlapW; x += step) {
-          var px, py, cx2, cy2;
-          if (isVert) {
-            px = stripX0 + x; py = shift + y;
-            cx2 = stripX0 + x; cy2 = y;
-          } else {
-            px = shift + x; py = y;
-            cx2 = x; cy2 = y;
+      // --- Scan bottom half for distinctive reference rows ---
+      // Use FULL row width for variance (center strip may miss text in Swagger UI)
+      var rowPool = [];
+      var scanFrom = Math.max(0, Math.floor(h / 2));
+      for (var ry = scanFrom; ry < h - 3; ry++) {
+        var sum = 0, sumSq = 0, sn = 0;
+        for (var sx = 0; sx < w; sx += 8) {
+          var v = pd[ry * w + sx];
+          sum += v; sumSq += v * v; sn++;
+        }
+        var mean = sum / sn;
+        var variance = sumSq / sn - mean * mean;
+        if (variance > MIN_VARIANCE) rowPool.push({ row: ry, v: variance });
+      }
+      // Fallback: scan upward to h/4 with lower threshold, also full width
+      if (rowPool.length === 0) {
+        var fallbackLimit = Math.max(0, Math.floor(h / 4));
+        for (var ry = scanFrom - 1; ry >= fallbackLimit; ry--) {
+          var sum = 0, sumSq = 0, sn = 0;
+          for (var sx = 0; sx < w; sx += 8) {
+            var v = pd[ry * w + sx];
+            sum += v; sumSq += v * v; sn++;
           }
-          var pv = pd[py * w + px];
-          var cv = cd[cy2 * w + cx2];
-          sumP += pv; sumC += cv;
-          sumPP += pv * pv; sumCC += cv * cv;
-          sumPC += pv * cv;
-          n++;
+          var mean = sum / sn;
+          var variance = sumSq / sn - mean * mean;
+          if (variance > MIN_VARIANCE * 0.25) { rowPool.push({ row: ry, v: variance }); break; }
         }
       }
-      if (n < 20) continue;
-      var meanP = sumP / n;
-      var meanC = sumC / n;
-      var varP = sumPP / n - meanP * meanP;
-      var varC = sumCC / n - meanC * meanC;
-      var cov = sumPC / n - meanP * meanC;
-      var denom = Math.sqrt(varP * varC);
-      var ncc = denom > 0 ? cov / denom : 0;
-
-      if (ncc > bestNCC) {
-        bestNCC = ncc;
-        bestShift = shift;
+      if (rowPool.length === 0) return { deltaY: 0, confidence: 0, reason: 'no-refrows' };
+      // Pick top 5 by variance with min 5px spacing
+      rowPool.sort(function(a, b) { return b.v - a.v; });
+      var refRows = [rowPool[0].row];
+      for (var pi = 1; pi < rowPool.length && refRows.length < 5; pi++) {
+        var tooClose = false;
+        for (var ri = 0; ri < refRows.length; ri++) {
+          if (Math.abs(rowPool[pi].row - refRows[ri]) < 5) { tooClose = true; break; }
+        }
+        if (!tooClose) refRows.push(rowPool[pi].row);
       }
-    }
 
-    // Pass 2 (Fine): step=1, narrow band near seam boundary
-    if (bestShift > 0) {
-      var fineMin = Math.max(minShift, bestShift - 3);
-      var fineMax = Math.min(maxShift, bestShift + 3);
-      var fineBandH = 40;
-      var refinedNCC = -1;
-      var refinedShift = bestShift;
+      // --- Precompute gradient for reference rows at each strip ---
+      // gradient[stripIdx][refRowIdx] = Int16Array of horizontal differences
+      var refGrads = [];
+      for (var si = 0; si < strips.length; si++) {
+        var stripGrads = [];
+        for (var ri = 0; ri < refRows.length; ri++) {
+          var g = new Int16Array(sw - 1);
+          var rowOff = refRows[ri] * w + strips[si].x0;
+          for (var gx = 1; gx < sw; gx++) {
+            g[gx - 1] = pd[rowOff + gx] - pd[rowOff + gx - 1];
+          }
+          stripGrads.push(g);
+        }
+        refGrads.push(stripGrads);
+      }
 
-      for (var shift = fineMin; shift <= fineMax; shift++) {
-        var overlapH = isVert ? Math.min(fineBandH, h - shift) : Math.min(fineBandH, h);
-        var overlapW = isVert ? stripW : Math.min(fineBandH, w - shift);
-        if (overlapH < 4 || overlapW < 4) continue;
+      // --- Determine search range ---
+      var minRef = refRows[0];
+      for (var ri = 1; ri < refRows.length; ri++) {
+        if (refRows[ri] < minRef) minRef = refRows[ri];
+      }
+      var maxY = minRef - 4;  // match must be above lowest reference row
+      if (maxY < 0) return { deltaY: 0, confidence: 0, reason: 'search-range' };
 
-        var sumP = 0, sumC = 0, sumPP = 0, sumCC = 0, sumPC = 0;
-        var n = 0;
-        for (var y = 0; y < overlapH; y++) {
-          for (var x = 0; x < overlapW; x++) {
-            var px, py, cx2, cy2;
-            if (isVert) {
-              px = stripX0 + x; py = shift + y;
-              cx2 = stripX0 + x; cy2 = y;
-            } else {
-              px = shift + x; py = y;
-              cx2 = x; cy2 = y;
+      // --- Full search: find top K candidates (no early break) ---
+      var CANDIDATES_K = 5;
+      var topK = [];  // { score, row } sorted ascending by score
+      var stripBail = BAIL_PER_PIXEL * sw;
+
+      for (var y = maxY; y >= 0; y--) {
+        var totalScore = 0;
+        var bailed = false;
+
+        // Score = average of (pixelSAD + gradientSAD) across all strips and ref rows
+        for (var si = 0; si < strips.length && !bailed; si++) {
+          for (var ri = 0; ri < refRows.length && !bailed; ri++) {
+            var refOff = refRows[ri] * w + strips[si].x0;
+            var dy = refRows[ri] - minRef;
+            var curY = y + dy;
+            if (curY < 0 || curY >= h) { bailed = true; break; }
+            var curOff = curY * w + strips[si].x0;
+
+            // Pixel SAD
+            var pSAD = 0;
+            for (var x = 0; x < sw; x++) {
+              pSAD += Math.abs(pd[refOff + x] - cd[curOff + x]);
+              if (pSAD > stripBail) { bailed = true; break; }
             }
-            var pv = pd[py * w + px];
-            var cv = cd[cy2 * w + cx2];
-            sumP += pv; sumC += cv;
-            sumPP += pv * pv; sumCC += cv * cv;
-            sumPC += pv * cv;
-            n++;
+            if (bailed) break;
+
+            // Gradient SAD
+            var gSAD = 0;
+            var rg = refGrads[si][ri];
+            for (var gx = 1; gx < sw; gx++) {
+              var cg = cd[curOff + gx] - cd[curOff + gx - 1];
+              gSAD += Math.abs(rg[gx - 1] - cg);
+            }
+
+            totalScore += pSAD / sw + gSAD / (sw - 1);
           }
         }
-        if (n < 10) continue;
-        var meanP = sumP / n;
-        var meanC = sumC / n;
-        var varP = sumPP / n - meanP * meanP;
-        var varC = sumCC / n - meanC * meanC;
-        var cov = sumPC / n - meanP * meanC;
-        var denom = Math.sqrt(varP * varC);
-        var ncc = denom > 0 ? cov / denom : 0;
 
-        if (ncc > refinedNCC) {
-          refinedNCC = ncc;
-          refinedShift = shift;
+        if (bailed) continue;
+
+        var nPairs = strips.length * refRows.length;
+        var avgScore = totalScore / nPairs;
+
+        // Insert into top K if good enough
+        if (topK.length < CANDIDATES_K || avgScore < topK[topK.length - 1].score) {
+          topK.push({ score: avgScore, row: y });
+          topK.sort(function(a, b) { return a.score - b.score; });
+          if (topK.length > CANDIDATES_K) topK.length = CANDIDATES_K;
         }
       }
 
-      // Accept refined shift if NCC quality is comparable
-      // Keep original bestNCC (full-overlap) as confidence — narrow-band NCC is not comparable
-      if (refinedNCC > bestNCC * 0.95) {
-        bestShift = refinedShift;
+      if (topK.length === 0) return { deltaY: 0, confidence: 0, reason: 'all-bailed(refs=' + refRows.length + ')' };
+
+      // --- Validate each candidate in order (best score first) ---
+      var lastVAvg = 0;  // track validation avg for diagnostics
+      for (var ci = 0; ci < topK.length; ci++) {
+        var cRow = topK[ci].row;
+        var cScore = topK[ci].score;
+        var deltaY = minRef - cRow;
+        if (deltaY <= 0) continue;
+
+        var vCheckCount = Math.min(VALIDATE_ROWS, Math.min(minRef, cRow));
+        var vPass = true;
+        if (vCheckCount > 5) {
+          var vSAD = 0, vN = 0;
+          var vcx0 = strips[1].x0;
+          for (var vr = 1; vr <= vCheckCount; vr++) {
+            var vRefOff = (minRef - vr) * w + vcx0;
+            var vCurOff = (cRow - vr) * w + vcx0;
+            for (var vx = 0; vx < sw; vx += 2) {
+              vSAD += Math.abs(pd[vRefOff + vx] - cd[vCurOff + vx]);
+              vN++;
+            }
+          }
+          lastVAvg = vN > 0 ? vSAD / vN : 0;
+          if (lastVAvg > VALIDATE_MAX_AVG) vPass = false;
+        }
+        if (!vPass) continue;
+
+        var confidence = Math.max(0, Math.min(1, 1 - cScore / 30));
+        return { deltaY: deltaY, confidence: confidence, reason: 'ok(ci=' + ci + ')', refRowCount: refRows.length };
+      }
+
+      // All candidates failed validation
+      var dbg = topK[0];
+      return { deltaY: 0, confidence: 0, reason: 'all-' + topK.length + '-failed(score=' + dbg.score.toFixed(1) + ',row=' + dbg.row + ',vAvg=' + lastVAvg.toFixed(1) + ')' };
+
+    } else {
+      // --- Horizontal: L/C/R strip matching with gradient + best match + uniqueness ---
+      var STRIP_H = 80;
+      var strips = [
+        { y0: Math.max(0, (h * 0.2 - STRIP_H / 2) | 0) },
+        { y0: Math.max(0, (h * 0.5 - STRIP_H / 2) | 0) },
+        { y0: Math.max(0, (h * 0.8 - STRIP_H / 2) | 0) },
+      ];
+      var sh = Math.min(STRIP_H, h);
+      for (var si = 0; si < strips.length; si++) {
+        if (strips[si].y0 + sh > h) strips[si].y0 = h - sh;
+      }
+
+      // Find 3 spread reference columns
+      var refCols = [];
+      var candidates = [w - 30, w - 20, w - 10];
+      for (var ci = 0; ci < candidates.length; ci++) {
+        var rx = candidates[ci];
+        if (rx < 0 || rx >= w) continue;
+        var sum = 0, sumSq = 0, sn = 0;
+        var cy0 = strips[1].y0;
+        for (var sy = 0; sy < sh; sy += 4) {
+          var v = pd[(cy0 + sy) * w + rx];
+          sum += v; sumSq += v * v; sn++;
+        }
+        var mean = sum / sn;
+        var variance = sumSq / sn - mean * mean;
+        if (variance > MIN_VARIANCE) refCols.push(rx);
+      }
+      if (refCols.length === 0) {
+        for (var rx = w - 10; rx >= 0; rx--) {
+          var sum = 0, sumSq = 0, sn = 0;
+          var cy0 = strips[1].y0;
+          for (var sy = 0; sy < sh; sy += 4) {
+            var v = pd[(cy0 + sy) * w + rx];
+            sum += v; sumSq += v * v; sn++;
+          }
+          var mean = sum / sn;
+          var variance = sumSq / sn - mean * mean;
+          if (variance > MIN_VARIANCE) { refCols.push(rx); break; }
+        }
+      }
+      if (refCols.length === 0) return { deltaY: 0, confidence: 0 };
+
+      // Precompute vertical gradient for reference columns at each strip
+      var refGrads = [];
+      for (var si = 0; si < strips.length; si++) {
+        var stripGrads = [];
+        for (var ri = 0; ri < refCols.length; ri++) {
+          var g = new Int16Array(sh - 1);
+          for (var gy = 1; gy < sh; gy++) {
+            g[gy - 1] = pd[(strips[si].y0 + gy) * w + refCols[ri]] - pd[(strips[si].y0 + gy - 1) * w + refCols[ri]];
+          }
+          stripGrads.push(g);
+        }
+        refGrads.push(stripGrads);
+      }
+
+      var minRef = refCols[0];
+      for (var ri = 1; ri < refCols.length; ri++) {
+        if (refCols[ri] < minRef) minRef = refCols[ri];
+      }
+      var maxX = minRef - 4;
+      if (maxX < 0) return { deltaY: 0, confidence: 0 };
+
+      var bestScore = Infinity;
+      var bestCol = -1;
+      var stripBail = BAIL_PER_PIXEL * sh;
+
+      for (var xi = maxX; xi >= 0; xi--) {
+        var totalScore = 0;
+        var bailed = false;
+
+        for (var si = 0; si < strips.length && !bailed; si++) {
+          for (var ri = 0; ri < refCols.length && !bailed; ri++) {
+            var dx = refCols[ri] - minRef;
+            var curX = xi + dx;
+            if (curX < 0 || curX >= w) { bailed = true; break; }
+
+            var pSAD = 0;
+            for (var yi = 0; yi < sh; yi++) {
+              pSAD += Math.abs(pd[(strips[si].y0 + yi) * w + refCols[ri]] - cd[(strips[si].y0 + yi) * w + curX]);
+              if (pSAD > stripBail) { bailed = true; break; }
+            }
+            if (bailed) break;
+
+            var gSAD = 0;
+            var rg = refGrads[si][ri];
+            for (var gy = 1; gy < sh; gy++) {
+              var cg = cd[(strips[si].y0 + gy) * w + curX] - cd[(strips[si].y0 + gy - 1) * w + curX];
+              gSAD += Math.abs(rg[gy - 1] - cg);
+            }
+
+            totalScore += pSAD / sh + gSAD / (sh - 1);
+          }
+        }
+
+        if (bailed) continue;
+
+        var nPairs = strips.length * refCols.length;
+        var avgScore = totalScore / nPairs;
+
+        if (avgScore < bestScore) {
+          bestScore = avgScore;
+          bestCol = xi;
+        }
+      }
+
+      if (bestCol < 0) return { deltaY: 0, confidence: 0 };
+
+
+      var vCheckCount = Math.min(VALIDATE_ROWS, Math.min(minRef, bestCol));
+      if (vCheckCount > 5) {
+        var vSAD = 0, vN = 0;
+        var cy0 = strips[1].y0;
+        for (var vc = 1; vc <= vCheckCount; vc++) {
+          for (var vy = 0; vy < sh; vy += 2) {
+            vSAD += Math.abs(pd[(cy0 + vy) * w + (minRef - vc)] - cd[(cy0 + vy) * w + (bestCol - vc)]);
+            vN++;
+          }
+        }
+        if (vN > 0 && vSAD / vN > VALIDATE_MAX_AVG) {
+          return { deltaY: 0, confidence: 0 };
+        }
+      }
+
+      var deltaY = minRef - bestCol;
+      if (deltaY <= 0) return { deltaY: 0, confidence: 0 };
+
+      var confidence = Math.max(0, Math.min(1, 1 - bestScore / 30));
+      return { deltaY: deltaY, confidence: confidence };
+    }
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  //  mergeFrames — Merge two overlapping frames with optimal seam finding
+  //  For document images: finds whitespace between text lines as the seam.
+  //  Returns { imageData, seamRow } where imageData is the merged result.
+  // ═══════════════════════════════════════════════════════════════
+  mergeFrames: function(imgDataA, imgDataB, overlapPx, direction) {
+    var isVert = direction !== 'horizontal';
+    var w = imgDataA.width;
+    var hA = imgDataA.height;
+    var hB = imgDataB.height;
+    var FEATHER_RADIUS = 5;  // ±5px blend around seam
+
+    if (!isVert) {
+      // Horizontal: simple cut at midpoint for now
+      var mid = Math.floor(overlapPx / 2);
+      var outW = imgDataA.width + imgDataB.width - overlapPx;
+      var c = document.createElement('canvas');
+      c.width = outW; c.height = imgDataA.height;
+      var ctx = c.getContext('2d');
+      var cA = document.createElement('canvas');
+      cA.width = imgDataA.width; cA.height = imgDataA.height;
+      cA.getContext('2d').putImageData(imgDataA, 0, 0);
+      var cB = document.createElement('canvas');
+      cB.width = imgDataB.width; cB.height = imgDataB.height;
+      cB.getContext('2d').putImageData(imgDataB, 0, 0);
+      ctx.drawImage(cA, 0, 0);
+      ctx.drawImage(cB, overlapPx, 0, imgDataB.width - overlapPx, imgDataB.height,
+                   imgDataA.width, 0, imgDataB.width - overlapPx, imgDataB.height);
+      return { imageData: ctx.getImageData(0, 0, outW, imgDataA.height), seamRow: mid };
+    }
+
+    // --- Vertical merge ---
+    // Step 1: Extract overlap strips (grayscale for scoring)
+    var dA = imgDataA.data;  // overlap = bottom overlapPx rows of A
+    var dB = imgDataB.data;  // overlap = top overlapPx rows of B
+    var overlapStartA = hA - overlapPx;  // where overlap begins in A
+
+    // Step 2: Score each row in the overlap region
+    //   seamScore = crossDiff + variance weight
+    //   Lower score = better seam (more blank, more similar between frames)
+    var scores = new Float32Array(overlapPx);
+    var rowAvgs = new Float32Array(overlapPx);  // for variance calculation
+
+    for (var r = 0; r < overlapPx; r++) {
+      var rowInA = overlapStartA + r;
+      var rowInB = r;
+      var diffSum = 0;
+      var brightSum = 0;
+
+      // Pass 1: cross-frame difference + average brightness
+      for (var x = 0; x < w; x += 2) {  // sample every 2px for speed
+        var iA = (rowInA * w + x) * 4;
+        var iB = (rowInB * w + x) * 4;
+        var lumA = dA[iA] * 77 + dA[iA + 1] * 150 + dA[iA + 2] * 29 >> 8;
+        var lumB = dB[iB] * 77 + dB[iB + 1] * 150 + dB[iB + 2] * 29 >> 8;
+        var d = lumA - lumB;
+        diffSum += d * d;
+        brightSum += lumA;
+      }
+      var samples = Math.ceil(w / 2);
+      var avgBright = brightSum / samples;
+      rowAvgs[r] = avgBright;
+
+      // Pass 2: within-row variance (low = blank/whitespace)
+      var varSum = 0;
+      for (var x = 0; x < w; x += 4) {  // coarser sampling ok for variance
+        var iA = (rowInA * w + x) * 4;
+        var lumA = dA[iA] * 77 + dA[iA + 1] * 150 + dA[iA + 2] * 29 >> 8;
+        var dv = lumA - avgBright;
+        varSum += dv * dv;
+      }
+      var rowVar = varSum / Math.ceil(w / 4);
+
+      // Combined: cross-frame error + row variance (weight variance more for documents)
+      var crossDiff = Math.sqrt(diffSum / samples);
+      scores[r] = crossDiff + 0.5 * rowVar;
+    }
+
+    // Step 3: Smooth scores with box filter (avoid noise-driven single-row minima)
+    var SMOOTH_W = 3;
+    var smoothed = new Float32Array(overlapPx);
+    for (var r = 0; r < overlapPx; r++) {
+      var sum = 0, cnt = 0;
+      for (var k = -SMOOTH_W; k <= SMOOTH_W; k++) {
+        var idx = r + k;
+        if (idx >= 0 && idx < overlapPx) { sum += scores[idx]; cnt++; }
+      }
+      smoothed[r] = sum / cnt;
+    }
+
+    // Step 4: Find best seam row (skip outer 10% margins)
+    var margin = Math.max(3, Math.floor(overlapPx * 0.1));
+    var bestRow = Math.floor(overlapPx / 2);  // default: center
+    var bestScore = Infinity;
+    for (var r = margin; r < overlapPx - margin; r++) {
+      if (smoothed[r] < bestScore) {
+        bestScore = smoothed[r];
+        bestRow = r;
       }
     }
 
-    return { deltaY: bestShift, confidence: bestNCC };
+    // Step 5: Assemble merged image
+    //   Frame A: rows 0 .. (overlapStartA + bestRow - FEATHER_RADIUS)
+    //   Feather blend: ±FEATHER_RADIUS around seam
+    //   Frame B: rows (bestRow + FEATHER_RADIUS) .. end
+    var cutA = overlapStartA + bestRow;  // seam position in A's coordinate
+    var cutB = bestRow;                  // seam position in B's coordinate
+    var outH = cutA + (hB - cutB);
+    var outData = new Uint8ClampedArray(w * outH * 4);
+
+    // Copy Frame A above seam
+    var aEnd = Math.max(0, cutA - FEATHER_RADIUS);
+    var aBytes = aEnd * w * 4;
+    for (var i = 0; i < aBytes; i++) outData[i] = dA[i];
+
+    // Feather blend zone
+    var blendStart = Math.max(0, cutA - FEATHER_RADIUS);
+    var blendEnd = Math.min(Math.min(hA, cutA + FEATHER_RADIUS), hB + overlapStartA);
+    for (var r = blendStart; r < blendEnd; r++) {
+      var rB = r - overlapStartA;  // corresponding row in B
+      if (rB < 0 || rB >= hB) {
+        // Outside B's range — just copy A
+        var off = r * w * 4;
+        for (var x = 0; x < w * 4; x++) outData[off + x] = dA[off + x];
+        continue;
+      }
+      var alpha = (r - blendStart) / (blendEnd - blendStart);  // 0→1
+      var offOut = r * w * 4;
+      var offA = r * w * 4;
+      var offB = rB * w * 4;
+      for (var x = 0; x < w * 4; x++) {
+        outData[offOut + x] = Math.round(dA[offA + x] * (1 - alpha) + dB[offB + x] * alpha);
+      }
+    }
+
+    // Copy Frame B below seam
+    var bStart = cutB + FEATHER_RADIUS;
+    if (bStart < 0) bStart = 0;
+    var outOffset = (cutA + FEATHER_RADIUS) * w * 4;
+    var bOffset = bStart * w * 4;
+    var bBytes = (hB - bStart) * w * 4;
+    if (outOffset >= 0 && bOffset >= 0 && bBytes > 0) {
+      for (var i = 0; i < bBytes && outOffset + i < outData.length; i++) {
+        outData[outOffset + i] = dB[bOffset + i];
+      }
+    }
+
+    var result = new ImageData(outData, w, outH);
+    console.log('[mergeFrames] overlap=' + overlapPx + ' seamRow=' + bestRow +
+      ' score=' + bestScore.toFixed(1) + ' outH=' + outH);
+    return { imageData: result, seamRow: bestRow };
   },
 
   // Extract new content strip from current frame based on deltaY
@@ -372,9 +719,7 @@ var CaptureEngine = {
     c.width = totalW; c.height = totalH;
     var cx = c.getContext('2d');
     var offset = 0;
-    var boundaries = [];
     for (var i = 0; i < strips.length; i++) {
-      if (i > 0) boundaries.push(offset);
       if (isVert) {
         cx.putImageData(strips[i], 0, offset);
         offset += strips[i].height;
@@ -382,52 +727,6 @@ var CaptureEngine = {
         cx.putImageData(strips[i], offset, 0);
         offset += strips[i].width;
       }
-    }
-    // Fix C: Feathered blending at strip boundaries
-    if (boundaries.length > 0) {
-      var blendData = cx.getImageData(0, 0, totalW, totalH);
-      var bPx = blendData.data;
-      var BLEND_ROWS = 2;
-      for (var bi = 0; bi < boundaries.length; bi++) {
-        var by = boundaries[bi];
-        for (var d = 0; d < BLEND_ROWS; d++) {
-          var mixAmt = ((BLEND_ROWS - d) / (BLEND_ROWS + 1)) * 0.35;
-          if (isVert) {
-            var rowA = by - 1 - d;
-            var rowB = by + d;
-            if (rowA < 0 || rowB >= totalH) continue;
-            for (var bx = 0; bx < totalW; bx++) {
-              var idxA = (rowA * totalW + bx) * 4;
-              var idxB = (rowB * totalW + bx) * 4;
-              var rA = bPx[idxA], gA = bPx[idxA+1], bA = bPx[idxA+2];
-              var rB = bPx[idxB], gB = bPx[idxB+1], bB = bPx[idxB+2];
-              bPx[idxA]   = Math.round(rA + (rB - rA) * mixAmt);
-              bPx[idxA+1] = Math.round(gA + (gB - gA) * mixAmt);
-              bPx[idxA+2] = Math.round(bA + (bB - bA) * mixAmt);
-              bPx[idxB]   = Math.round(rB + (rA - rB) * mixAmt);
-              bPx[idxB+1] = Math.round(gB + (gA - gB) * mixAmt);
-              bPx[idxB+2] = Math.round(bB + (bA - bB) * mixAmt);
-            }
-          } else {
-            var colA = by - 1 - d;
-            var colB = by + d;
-            if (colA < 0 || colB >= totalW) continue;
-            for (var ry = 0; ry < totalH; ry++) {
-              var idxA = (ry * totalW + colA) * 4;
-              var idxB = (ry * totalW + colB) * 4;
-              var rA = bPx[idxA], gA = bPx[idxA+1], bA = bPx[idxA+2];
-              var rB = bPx[idxB], gB = bPx[idxB+1], bB = bPx[idxB+2];
-              bPx[idxA]   = Math.round(rA + (rB - rA) * mixAmt);
-              bPx[idxA+1] = Math.round(gA + (gB - gA) * mixAmt);
-              bPx[idxA+2] = Math.round(bA + (bB - bA) * mixAmt);
-              bPx[idxB]   = Math.round(rB + (rA - rB) * mixAmt);
-              bPx[idxB+1] = Math.round(gB + (gA - gB) * mixAmt);
-              bPx[idxB+2] = Math.round(bB + (bA - bB) * mixAmt);
-            }
-          }
-        }
-      }
-      cx.putImageData(blendData, 0, 0);
     }
 
     c.toBlob(function(blob) {
@@ -497,10 +796,9 @@ var CaptureEngine = {
         }
       }
 
-      // Handle canvas height limits — segment if needed
-      var MAX_DIM = 16000;
+      // Handle canvas dimension limits (most browsers: 32768px max)
+      var MAX_DIM = 32000;
       if ((isVert && totalH > MAX_DIM) || (!isVert && totalW > MAX_DIM)) {
-        // For now, clamp to MAX_DIM (multi-segment in future)
         if (isVert) totalH = Math.min(totalH, MAX_DIM);
         else totalW = Math.min(totalW, MAX_DIM);
       }
@@ -3276,17 +3574,24 @@ function App() {
     active: false,
     canvas: null,
     ctx: null,
-    prevGray: null,
-    strips: [],
-    chunks: [],
+    anchorGray: null,
+    prevFrameGray: null,
+    prevFrameImgData: null,
+    lastSeenGray: null,         // last non-static frame gray (for static detection)
+    accData: null,               // accumulated merged ImageData
+    seamInfos: [],               // { y, frameNum } — seam positions in accumulated image
+    firstFrameNum: 0,
     frameCount: 0,
-    consecutiveFails: 0,
+    segmentCount: 0,
+    anchorFrameNum: -1,
+    consecutiveRejects: 0,      // stale anchor recovery counter
     startTime: 0,
     timerId: null,
     sampleIntervalId: null,
-    BLOB_THRESHOLD: 100, // strips before blob offload
     MAX_FRAMES: 2000,
-    MEMORY_AUTO_STOP: 1500, // MB
+    MEMORY_AUTO_STOP: 1500,
+    lastAnchorDeltaY: 0,
+    frameHeight: 0,
   });
 
   // Effect 1: Enumerate video devices (poll every 2s + devicechange)
@@ -3529,13 +3834,54 @@ function App() {
 
   // --- Capture Pipeline Functions ---
 
+  // Merge or concatenate a new segment into the accumulator image
+  function mergeIntoAcc(cap, imgData, overlapPx, frameNum, direction) {
+    var isVert = direction !== 'horizontal';
+    if (!cap.accData) {
+      cap.accData = imgData;
+      cap.firstFrameNum = frameNum;
+      return;
+    }
+    if (overlapPx > 0) {
+      var result = CaptureEngine.mergeFrames(cap.accData, imgData, overlapPx, direction);
+      var seamPos = (isVert ? cap.accData.height : cap.accData.width) - overlapPx + result.seamRow;
+      cap.seamInfos.push({ y: seamPos, frameNum: frameNum });
+      cap.accData = result.imageData;
+      console.log('[ScrollSnap] Merged f=' + frameNum + ' overlap=' + overlapPx + ' seam=' + result.seamRow + ' → ' + cap.accData.width + 'x' + cap.accData.height);
+    } else {
+      var joinPos = isVert ? cap.accData.height : cap.accData.width;
+      if (isVert) {
+        var newH = cap.accData.height + imgData.height;
+        var w2 = cap.accData.width;
+        var newArr = new Uint8ClampedArray(w2 * newH * 4);
+        newArr.set(cap.accData.data);
+        newArr.set(imgData.data, cap.accData.data.length);
+        cap.accData = new ImageData(newArr, w2, newH);
+      } else {
+        var oldW = cap.accData.width;
+        var newW = oldW + imgData.width;
+        var h3 = cap.accData.height;
+        var newArr = new Uint8ClampedArray(newW * h3 * 4);
+        for (var r = 0; r < h3; r++) {
+          var dOff = r * newW * 4;
+          var s1Off = r * oldW * 4;
+          for (var x = 0; x < oldW * 4; x++) newArr[dOff + x] = cap.accData.data[s1Off + x];
+          var s2Off = r * imgData.width * 4;
+          for (var x = 0; x < imgData.width * 4; x++) newArr[dOff + oldW * 4 + x] = imgData.data[s2Off + x];
+        }
+        cap.accData = new ImageData(newArr, newW, h3);
+      }
+      cap.seamInfos.push({ y: joinPos, frameNum: frameNum });
+      console.log('[ScrollSnap] Concat f=' + frameNum + ' no overlap → ' + cap.accData.width + 'x' + cap.accData.height);
+    }
+  }
+
   function captureFrame() {
     var cap = captureRef.current;
     if (!cap.active) return;
     var video = videoRef.current;
     if (!video || video.readyState < 2) return;
 
-    // Initialize canvas on first frame
     if (!cap.canvas) {
       cap.canvas = document.createElement('canvas');
       cap.canvas.width = video.videoWidth;
@@ -3547,99 +3893,158 @@ function App() {
     var h2 = cap.canvas.height;
     cap.ctx.drawImage(video, 0, 0, w, h2);
 
-    // Determine crop region from cropRect (apply during capture, not just download)
     var direction = state.scrollCapture.direction;
-    var isVert = direction !== 'horizontal';
     var cropRect = state.scrollCapture.ocrTarget === 'manual' ? state.scrollCapture.cropRect : null;
-
     var cx = 0, cy = 0, cw = w, ch = h2;
     if (cropRect) {
-      // Apply ALL four crop dimensions regardless of scroll direction
-      // This excludes browser chrome (address bar, bookmarks, dock) from every frame
       cx = Math.round(w * cropRect.x / 100);
       cy = Math.round(h2 * cropRect.y / 100);
       cw = Math.max(1, Math.round(w * cropRect.w / 100));
       ch = Math.max(1, Math.round(h2 * cropRect.h / 100));
     }
 
-    // Get frame data from the (possibly cropped) region
     var imgData = cap.ctx.getImageData(cx, cy, cw, ch);
     var currGray = CaptureEngine.toGray(imgData);
 
-    if (!cap.prevGray) {
-      // First frame: save the (possibly cropped) frame as the initial strip
-      cap.prevGray = currGray;
-      cap.strips.push(imgData);
+    // First frame: anchor
+    if (!cap.accData) {
+      cap.accData = imgData;
+      cap.firstFrameNum = 0;
+      cap.anchorGray = currGray;
+      // prevFrameGray/ImgData intentionally NOT set — first frame already in accData
+      cap.lastSeenGray = currGray;
+      cap.anchorFrameNum = 0;
       cap.frameCount = 1;
+      cap.frameHeight = currGray.height;
       cap.cropApplied = !!cropRect;
-      dispatch({ type: 'SC_UPDATE', v: { frameCount: 1, matchQuality: 1 } });
+      dispatch({ type: 'SC_UPDATE', v: { frameCount: 1, matchQuality: 1, segmentCount: 0 } });
       return;
     }
 
-    // Static frame detection — skip silently when screen hasn't changed
-    var _sd = currGray.data, _pd = cap.prevGray.data;
-    var _sLen = Math.min(_sd.length, _pd.length);
-    var _step = Math.max(1, (_sLen / 200) | 0);
-    var _diff = 0, _sn = 0;
-    for (var _si = 0; _si < _sLen; _si += _step) { _diff += Math.abs(_sd[_si] - _pd[_si]); _sn++; }
-    if (_sn > 0 && _diff / _sn < 2) return;  // avg pixel diff < 2 = same frame, not a failure
-
-    // NCC matching on the (possibly cropped) frames
-    var result = CaptureEngine.nccMatch(cap.prevGray, currGray, direction);
-
-    if (result.confidence < 0.5 || result.deltaY <= 0) {
-      // Low confidence or no movement — skip
-      cap.consecutiveFails++;
-      dispatch({ type: 'SC_UPDATE', v: { consecutiveFails: cap.consecutiveFails, matchQuality: result.confidence } });
-      return;
+    // Static frame detection
+    var lastGray = cap.lastSeenGray || cap.anchorGray;
+    if (lastGray) {
+      var _sd = currGray.data, _pd = lastGray.data;
+      var _sLen = Math.min(_sd.length, _pd.length);
+      var _step = Math.max(1, (_sLen / 200) | 0);
+      var _diff = 0, _sn = 0;
+      for (var _si = 0; _si < _sLen; _si += _step) { _diff += Math.abs(_sd[_si] - _pd[_si]); _sn++; }
+      if (_sn > 0 && _diff / _sn < 2) return;
     }
 
-    // Extract new content strip from the (possibly cropped) region
-    var strip;
-    if (isVert) {
-      var stripH = Math.min(result.deltaY, ch);
-      if (stripH > 0) strip = cap.ctx.getImageData(cx, cy + ch - stripH, cw, stripH);
+    // Non-static frame — only segments array holds kept frames
+    cap.frameCount++;
+    var fNum = cap.frameCount - 1;
+
+    // Check overlap with anchor
+    var result = CaptureEngine.rowMatch(cap.anchorGray, currGray, direction, 0);
+    console.log('[ScrollSnap] f=' + fNum + ' anchor=' + cap.anchorFrameNum + ' dY=' + result.deltaY + ' c=' + result.confidence.toFixed(3) + (result.reason && result.reason !== 'ok' ? ' reason=' + result.reason : '') + (result.refRowCount ? ' refs=' + result.refRowCount : ''));
+
+    // False match detection:
+    //  1. deltaY must be >= 20 (tiny dY=4 is systematic false match from fixed bottom UI)
+    //  2. deltaY must grow between non-static frames (stale dY = repeating pattern match)
+    //  3. deltaY must stay < 85% of frame height (preserve enough overlap for stitching)
+    var deltaGrew = result.deltaY > cap.lastAnchorDeltaY + 3;
+    var isValidOverlap = result.deltaY >= 20 && result.confidence >= 0.3 && deltaGrew;
+    var maxDeltaY = Math.floor(cap.frameHeight * 0.50);
+
+    if (isValidOverlap) {
+      cap.consecutiveRejects = 0;
+      cap.prevFrameRejects = 0;
+      if (result.deltaY >= maxDeltaY && cap.prevFrameImgData) {
+        // Overlap valid but too large — proactive segment break to preserve stitching overlap
+        var overlap = cap.frameHeight - cap.lastAnchorDeltaY;
+        mergeIntoAcc(cap, cap.prevFrameImgData, overlap, cap.prevFrameNum, direction);
+        cap.anchorGray = cap.prevFrameGray;
+        cap.anchorFrameNum = fNum - 1;
+        cap.prevFrameGray = null;
+        cap.prevFrameImgData = null;
+        cap.lastAnchorDeltaY = 0;
+        cap.segmentCount++;
+        console.log('[ScrollSnap] Seg ' + cap.segmentCount + ' max-overlap break at f=' + fNum + ' dY=' + result.deltaY + ' max=' + maxDeltaY + ' newAnchor=' + cap.anchorFrameNum);
+        dispatch({ type: 'SC_UPDATE', v: {
+          frameCount: cap.frameCount,
+          matchQuality: 0,
+          segmentCount: cap.segmentCount,
+        }});
+      } else {
+        // Normal valid overlap — update prevFrame
+        cap.lastAnchorDeltaY = result.deltaY;
+        cap.prevFrameGray = currGray;
+        cap.prevFrameImgData = imgData;
+        cap.prevFrameNum = fNum;
+        dispatch({ type: 'SC_UPDATE', v: {
+          frameCount: cap.frameCount,
+          matchQuality: result.confidence,
+          segmentCount: cap.segmentCount,
+        }});
+      }
+    } else if (result.deltaY >= 20 && result.confidence >= 0.3 && !deltaGrew) {
+      // Valid match but scroll didn't advance — skip silently, don't count as reject
+      cap.prevFrameRejects = 0;
+      cap.consecutiveRejects = 0;
+      console.log('[ScrollSnap] f=' + fNum + ' scroll paused (dY=' + result.deltaY + ' same as prev), skip');
     } else {
-      var stripW = Math.min(result.deltaY, cw);
-      if (stripW > 0) strip = cap.ctx.getImageData(cx + cw - stripW, cy, stripW, ch);
+      if (cap.prevFrameImgData) {
+        cap.prevFrameRejects = (cap.prevFrameRejects || 0) + 1;
+        if (cap.prevFrameRejects >= 3) {
+          // 3 consecutive failures — segment break, prevFrame becomes new anchor
+          cap.prevFrameRejects = 0;
+          cap.consecutiveRejects = 0;
+          var overlap = cap.frameHeight - cap.lastAnchorDeltaY;
+          mergeIntoAcc(cap, cap.prevFrameImgData, overlap, cap.prevFrameNum, direction);
+          cap.anchorGray = cap.prevFrameGray;
+          cap.anchorFrameNum = cap.prevFrameNum;
+          cap.prevFrameGray = null;
+          cap.prevFrameImgData = null;
+          cap.lastAnchorDeltaY = 0;
+          cap.segmentCount++;
+          console.log('[ScrollSnap] Seg ' + cap.segmentCount + ' break at f=' + fNum + ' (after 3 rejects) newAnchor=' + cap.anchorFrameNum);
+          dispatch({ type: 'SC_UPDATE', v: {
+            frameCount: cap.frameCount,
+            matchQuality: 0,
+            segmentCount: cap.segmentCount,
+          }});
+        } else {
+          console.log('[ScrollSnap] f=' + fNum + ' prevFrame reject (' + cap.prevFrameRejects + '/3), keeping anchor=' + cap.anchorFrameNum);
+        }
+      } else {
+        // No prevFrame — check for stale anchor recovery
+        cap.consecutiveRejects++;
+        if (cap.consecutiveRejects >= 10) {
+          // Anchor is stale — force current frame as new anchor
+          mergeIntoAcc(cap, imgData, 0, fNum, direction);
+          cap.anchorGray = currGray;
+          cap.anchorFrameNum = fNum;
+          cap.prevFrameGray = null;
+          cap.prevFrameImgData = null;
+          cap.lastAnchorDeltaY = 0;
+          cap.consecutiveRejects = 0;
+          cap.segmentCount++;
+          console.log('[ScrollSnap] Seg ' + cap.segmentCount + ' stale-anchor recovery at f=' + fNum);
+          dispatch({ type: 'SC_UPDATE', v: {
+            frameCount: cap.frameCount,
+            matchQuality: 0,
+            segmentCount: cap.segmentCount,
+          }});
+        } else {
+          console.log('[ScrollSnap] f=' + fNum + ' rejected (' + cap.consecutiveRejects + '/10), keeping anchor=' + cap.anchorFrameNum);
+        }
+      }
     }
 
+    // Update lastSeenGray for static detection (every non-static frame)
+    cap.lastSeenGray = currGray;
 
-    if (strip) {
-      cap.strips.push(strip);
-      cap.consecutiveFails = 0;
-      cap.frameCount++;
+    // Memory check — accumulated image + current prevFrame
+    var memBytes = cap.accData ? cap.accData.data.length : 0;
+    if (cap.prevFrameImgData) memBytes += cap.prevFrameImgData.data.length;
+    var memMB = Math.round(memBytes / (1024 * 1024));
+    dispatch({ type: 'SC_UPDATE', v: { memoryMB: memMB } });
 
-      // Blob offloading: merge strips to blob when threshold reached
-      if (cap.strips.length >= cap.BLOB_THRESHOLD) {
-        var toMerge = cap.strips.slice();
-        cap.strips = [];
-        CaptureEngine.mergeStripsToBlob(toMerge, direction, function(chunk) {
-          if (chunk) {
-            cap.chunks.push(chunk);
-          }
-        });
-      }
-
-      // Memory check
-      var memBytes = CaptureEngine.estimateMemory(cap.strips, cap.chunks);
-      var memMB = Math.round(memBytes / (1024 * 1024));
-
-      dispatch({ type: 'SC_UPDATE', v: {
-        frameCount: cap.frameCount,
-        matchQuality: result.confidence,
-        consecutiveFails: 0,
-        memoryMB: memMB,
-      }});
-
-      // Auto-stop on memory limit or frame limit
-      if (memMB >= cap.MEMORY_AUTO_STOP || cap.frameCount >= cap.MAX_FRAMES) {
-        stopCapture();
-        return;
-      }
+    if (memMB >= cap.MEMORY_AUTO_STOP || cap.frameCount >= cap.MAX_FRAMES) {
+      stopCapture();
     }
-
-    cap.prevGray = currGray;
   }
 
   function startCapture() {
@@ -3647,11 +4052,21 @@ function App() {
     cap.active = true;
     cap.canvas = null;
     cap.ctx = null;
-    cap.prevGray = null;
-    cap.strips = [];
-    cap.chunks = [];
+    cap.anchorGray = null;
+    cap.prevFrameGray = null;
+    cap.prevFrameImgData = null;
+    cap.prevFrameNum = -1;
+    cap.lastSeenGray = null;
+    cap.accData = null;
+    cap.seamInfos = [];
+    cap.firstFrameNum = 0;
+    cap.anchorFrameNum = -1;
+    cap.consecutiveRejects = 0;
+    cap.prevFrameRejects = 0;
+    cap.lastAnchorDeltaY = 0;
     cap.frameCount = 0;
-    cap.consecutiveFails = 0;
+    cap.segmentCount = 0;
+    cap.frameHeight = 0;
     cap.startTime = Date.now();
     cap.cropApplied = false;
 
@@ -3664,11 +4079,11 @@ function App() {
       memoryMB: 0,
       chainLength: 0,
       excludedFrames: 0,
+      segmentCount: 0,
       assembleProgress: 0,
       resultCanvas: null,
     }});
 
-    // Set video element srcObject for CAPTURING view
     setTimeout(function() {
       var el = videoRef.current;
       if (el && streamRef.current) {
@@ -3676,14 +4091,12 @@ function App() {
       }
     }, 50);
 
-    // Timer: update elapsed time every second
     cap.timerId = setInterval(function() {
       if (!cap.active) return;
       var elapsed = Math.floor((Date.now() - cap.startTime) / 1000);
       dispatch({ type: 'SC_UPDATE', v: { elapsedSec: elapsed } });
     }, 1000);
 
-    // Sample frames at ~10fps
     cap.sampleIntervalId = setInterval(function() {
       captureFrame();
     }, 100);
@@ -3695,49 +4108,60 @@ function App() {
     if (cap.timerId) { clearInterval(cap.timerId); cap.timerId = null; }
     if (cap.sampleIntervalId) { clearInterval(cap.sampleIntervalId); cap.sampleIntervalId = null; }
 
-    var totalFrames = cap.frameCount;
+    // Merge last prevFrame into accumulator
+    if (cap.prevFrameImgData) {
+      var direction = state.scrollCapture.direction;
+      var overlap = cap.frameHeight > 0 ? cap.frameHeight - cap.lastAnchorDeltaY : 0;
+      mergeIntoAcc(cap, cap.prevFrameImgData, overlap, cap.prevFrameNum, direction);
+      cap.prevFrameImgData = null;
+    }
+
     var direction = state.scrollCapture.direction;
+    var isVert = direction !== 'horizontal';
+
+    console.log('[ScrollSnap] Stop: ' + cap.frameCount + ' frames, ' + (cap.segmentCount + 1) + ' segments');
 
     dispatch({ type: 'SC_UPDATE', v: { phase: 'ASSEMBLING', assembleProgress: 0 } });
 
-    // Assemble final image
-    CaptureEngine.assembleFinal(
-      cap.chunks,
-      cap.strips,
-      direction,
-      function onProgress(pct) {
-        dispatch({ type: 'SC_UPDATE', v: { assembleProgress: pct } });
-      },
-      function onComplete(result) {
-        if (!result) {
-          dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
-          return;
-        }
-        var chainLen = totalFrames;
-        var excluded = 0; // simplified — future: track chain breaks
+    if (!cap.accData) {
+      dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
+      return;
+    }
 
-        // Estimate file sizes
-        var pngKB = Math.round(result.width * result.height * 0.3 / 1024); // rough estimate
-        var jpegKB = Math.round(pngKB * 0.4);
+    // Create final canvas from accumulated merged image
+    var canvasW = cap.accData.width;
+    var canvasH = cap.accData.height;
+    if (canvasW > 32000) canvasW = 32000;
+    if (canvasH > 32000) canvasH = 32000;
 
-        dispatch({ type: 'SC_UPDATE', v: {
-          phase: 'RESULT',
-          resultCanvas: result.canvas,
-          resultWidth: result.width,
-          resultHeight: result.height,
-          chainLength: chainLen,
-          excludedFrames: excluded,
-          assembleProgress: 100,
-          pngSizeKB: pngKB,
-          jpegSizeKB: jpegKB,
-        }});
+    var finalCanvas = document.createElement('canvas');
+    finalCanvas.width = canvasW;
+    finalCanvas.height = canvasH;
+    var fCtx = finalCanvas.getContext('2d');
+    fCtx.putImageData(cap.accData, 0, 0);
 
-        // Cleanup engine state
-        cap.strips = [];
-        cap.chunks = [];
-        cap.prevGray = null;
-      }
-    );
+
+    var pngKB = Math.round(canvasW * canvasH * 0.3 / 1024);
+    var jpegKB = Math.round(pngKB * 0.4);
+
+    dispatch({ type: 'SC_UPDATE', v: {
+      phase: 'RESULT',
+      resultCanvas: finalCanvas,
+      resultWidth: canvasW,
+      resultHeight: canvasH,
+      chainLength: cap.frameCount,
+      excludedFrames: cap.frameCount - cap.segmentCount - 1,
+      segmentCount: cap.segmentCount,
+      assembleProgress: 100,
+      pngSizeKB: pngKB,
+      jpegSizeKB: jpegKB,
+    }});
+
+    cap.accData = null;
+    cap.seamInfos = [];
+    cap.anchorGray = null;
+    cap.prevFrameGray = null;
+    cap.lastSeenGray = null;
   }
 
   function cancelAssemble() {
