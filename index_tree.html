@@ -8,7 +8,6 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -608,16 +607,10 @@
       var maxOverlap = isHoriz
               ? (itemA.w < itemB.w ? itemA.w : itemB.w)
               : (itemA.h < itemB.h ? itemA.h : itemB.h);
-      var dispatchTime = Date.now();
-      var sizeDesc = isHoriz
-              ? itemA.w + '+' + itemB.w + 'px (h=' + itemA.h + ')'
-              : itemA.h + '+' + itemB.h + 'px (w=' + itemA.w + ')';
-      console.log('[MergeTree] ▶ dispatch d' + depth + ' seq=' + itemA.seq + '/' + itemB.seq + ' size=' + sizeDesc + ' worker=' + slot.id + ' pending=' + tree.pendingCount);
       slot.worker.onmessage = function(e) {
         slot.busy = false;
         tree.pendingCount--;
         tree.totalMerged++;
-        var elapsed = Date.now() - dispatchTime;
         var r = e.data;
         // Track overlap quality
         tree.totalOverlapPx += r.overlapPx;
@@ -625,9 +618,7 @@
         var newItem = { buf: r.buf, w: r.w, h: r.h, seq: itemA.seq, depth: depth + 1 };
         if (!tree.depthQueues[depth + 1]) tree.depthQueues[depth + 1] = [];
         tree.depthQueues[depth + 1].push(newItem);
-        var resultSize = isHoriz ? r.w + 'px' : r.h + 'px';
-        var totalExpected = Math.max(1, tree.frameSeq - 1);
-        console.log('[MergeTree] ✔ done   d' + depth + '→d' + (depth + 1) + ' result=' + resultSize + ' overlap=' + r.overlapPx + ' seam=' + r.seamRow + ' ' + elapsed + 'ms | total ' + tree.totalMerged + '/' + totalExpected + ' pending=' + tree.pendingCount);
+        console.log('[MergeTree] depth=' + depth + ' → d' + (depth + 1) + ' ' + (isHoriz ? itemA.w + '+' + itemB.w + '→' + r.w : itemA.h + '+' + itemB.h + '→' + r.h) + ' overlap=' + r.overlapPx + ' seam=' + r.seamRow);
         MergeTree.tryMergePairs(tree);
       };
       slot.worker.onerror = function(err) {
@@ -650,11 +641,8 @@
     },
 
     finalize: function(tree, callback) {
-      var totalExpected = Math.max(1, tree.frameSeq - 1);
-      console.log('[MergeTree] ═══ finalize start: frames=' + tree.frameSeq + ' merges_needed=' + totalExpected + ' already_done=' + tree.totalMerged + ' pending=' + tree.pendingCount);
       tree.finalizing = true;
       tree.onComplete = callback;
-      tree._finalizeStart = Date.now();
       MergeTree._flushSingles(tree);
       MergeTree._checkComplete(tree);
     },
@@ -692,14 +680,10 @@
       }
 
       if (totalItems === 1 && tree.onComplete) {
-        var elapsed = tree._finalizeStart ? Date.now() - tree._finalizeStart : 0;
-        console.log('[MergeTree] ═══ finalize COMPLETE: totalMerged=' + tree.totalMerged + ' result=' + (lastItem ? lastItem.w + 'x' + lastItem.h : '?') + ' time=' + elapsed + 'ms');
         tree.onComplete(lastItem);
       } else if (totalItems > 1) {
-        console.log('[MergeTree] _checkComplete: ' + totalItems + ' items remaining, flushing...');
         MergeTree._flushSingles(tree);
       } else if (totalItems === 0 && tree.onComplete) {
-        console.log('[MergeTree] ═══ finalize COMPLETE: no items (empty tree)');
         tree.onComplete(null);
       }
     },
@@ -1782,7 +1766,7 @@
       selectedDeviceId: null,
       needsPermission: false, permissionDenied: false,
     },
-    scrollCapture: { phase: 'IDLE', direction: 'vertical', elapsedSec: 0, frameCount: 0, matchQuality: 0, consecutiveFails: 0, memoryMB: 0, assembleProgress: 0, assembleDone: 0, assembleTotal: 0, assembleStartTime: 0, chainLength: 0, excludedFrames: 0, resultCanvas: null, resultCanvases: [], chunkCount: 0, resultWidth: 0, resultHeight: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrMethod: 'tesseract', ocrTarget: 'manual', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '', cropRect: { x: 10, y: 10, w: 80, h: 80 } },
+    scrollCapture: { phase: 'IDLE', direction: 'vertical', elapsedSec: 0, frameCount: 0, matchQuality: 0, consecutiveFails: 0, memoryMB: 0, assembleProgress: 0, assembleDone: 0, assembleTotal: 0, assembleStartTime: 0, chainLength: 0, excludedFrames: 0, resultCanvas: null, resultWidth: 0, resultHeight: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrMethod: 'tesseract', ocrTarget: 'manual', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '', cropRect: { x: 10, y: 10, w: 80, h: 80 } },
     fileReceive: { phase: 'SETUP', scriptVersion: 'full', totalFrames: 0, collectedCount: 0, framesMap: {}, loopCount: 0, elapsedSec: 0, validRate: 0, speedKBs: 0, calibrationStep: 0, palette: null, fileData: null, fileName: null, fileSizeKB: 0, consecutiveMagic: 0, totalProcessed: 0, totalValid: 0, lastFrameNum: -1, errorMsg: null },
     blockText: { phase: 'SETUP', stabilityThreshold: 1.0, detectStatus: 'idle', stabilityPct: 0, roiRect: null, history: [], processingText: '', ocrMethod: 'tesseract', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, errorMsg: null, showLiveView: true },
     settings: { cvAuthType: 'apiKey', cvApiKey: '', cvOauthToken: '', oaiApiKey: '', oaiModel: 'gpt-4o', antApiKey: '', antModel: 'claude-sonnet-4-20250514', gemApiKey: '', gemModel: 'gemini-2.0', keyStorage: 'none', capDirection: 'vertical', capFrameRate: 30, capMaxFrames: 2000, capMemoryBudget: 1500, btStabilityThreshold: 85, btAutoClipboard: true, btNotifDuration: 3, btSensitivity: 'medium' },
@@ -2131,37 +2115,6 @@
     }, mime, fmt === 'jpeg' ? 0.92 : undefined);
   }
 
-  // Download multiple canvases as a ZIP file (uses JSZip from CDN)
-  function downloadCanvasesAsZip(canvases, basename, onDone) {
-    if (!canvases || canvases.length === 0) return;
-    if (canvases.length === 1) {
-      downloadCanvas(canvases[0], 'png', basename + '_1');
-      if (onDone) onDone();
-      return;
-    }
-    var zip = new JSZip();
-    var pending = canvases.length;
-    canvases.forEach(function(canvas, i) {
-      canvas.toBlob(function(blob) {
-        zip.file(basename + '_' + (i + 1) + '.png', blob);
-        pending--;
-        if (pending === 0) {
-          zip.generateAsync({ type: 'blob' }).then(function(zipBlob) {
-            var url = URL.createObjectURL(zipBlob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = basename + '.zip';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
-            if (onDone) onDone();
-          });
-        }
-      }, 'image/png');
-    });
-  }
-
   function ResultViewer(props) {
     var canvas = props.canvas;
     var containerRef = useRef(null);
@@ -2212,33 +2165,6 @@
                       draggable: false,
                     }) : null
             )
-    );
-  }
-
-  function MultiChunkViewer(props) {
-    var canvases = props.canvases;
-    var tabState = useState(0);
-    var selectedIdx = tabState[0];
-    var setSelectedIdx = tabState[1];
-    // Clamp in case canvases change
-    var idx = Math.min(selectedIdx, canvases.length - 1);
-    var current = canvases[idx];
-
-    return h('div', { className: 'flex-1 flex flex-col min-h-0' },
-      // Tab bar
-      h('div', { className: 'bg-zinc-800/90 backdrop-blur border-b border-zinc-700 h-9 px-2 flex items-center gap-1 overflow-x-auto flex-shrink-0' },
-        canvases.map(function(c, i) {
-          var active = i === idx;
-          return h('button', {
-            key: i,
-            className: 'px-3 py-1 text-xs rounded flex-shrink-0 ' + (active ? 'bg-zinc-600 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'),
-            onClick: function() { setSelectedIdx(i); },
-          }, '\uc774\ubbf8\uc9c0 ' + (i + 1));
-        }),
-        h('span', { className: 'ml-2 text-xs text-zinc-600 flex-shrink-0' }, canvases.length + '\uac1c \xb7 ' + current.width + '\xd7' + current.height + 'px')
-      ),
-      // Viewer for selected chunk — reuses ResultViewer (zoom, fit, original all work)
-      h(ResultViewer, { key: idx, canvas: current, width: current.width, height: current.height })
     );
   }
 
@@ -2494,8 +2420,8 @@
         var remaining = rate > 0 ? Math.ceil((total - done) / rate) : 0;
         if (remaining > 0) {
           etaStr = remaining < 60
-            ? '약 ' + remaining + '초 남음'
-            : '약 ' + Math.ceil(remaining / 60) + '분 남음';
+                  ? '약 ' + remaining + '초 남음'
+                  : '약 ' + Math.ceil(remaining / 60) + '분 남음';
         }
       }
       return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-6 p-8' },
@@ -2513,8 +2439,8 @@
                       h('div', { className: 'flex items-center justify-between mt-2' },
                               h('span', { className: 'text-sm text-zinc-400' },
                                       total > 0
-                                        ? '머지 ' + done + ' / ' + total
-                                        : st.frameCount + ' 프레임'
+                                              ? '머지 ' + done + ' / ' + total
+                                              : st.frameCount + ' 프레임'
                               ),
                               h('span', { className: 'text-lg font-mono font-bold text-zinc-200' }, pct + '%')
                       )
@@ -2524,11 +2450,7 @@
       );
     }
     if (st.phase === 'RESULT') {
-      var canvases = st.resultCanvases && st.resultCanvases.length > 0 ? st.resultCanvases : (st.resultCanvas ? [st.resultCanvas] : []);
-      if (canvases.length <= 1) {
-        return h(ResultViewer, { canvas: canvases[0] || st.resultCanvas, width: st.resultWidth, height: st.resultHeight });
-      }
-      return h(MultiChunkViewer, { canvases: canvases });
+      return h(ResultViewer, { canvas: st.resultCanvas, width: st.resultWidth, height: st.resultHeight });
     }
     if (st.phase === 'OCR_PROCESSING') {
       return h('div', { className: 'flex-1 flex flex-col items-center justify-center gap-4 p-8' },
@@ -2683,14 +2605,10 @@
     // RESULT sidebar — image download + OCR execute
     if (phase === 'RESULT') {
       var w = st.resultWidth; var ht = st.resultHeight;
-      var numChunks = (st.resultCanvases && st.resultCanvases.length) || 1;
-      var isMultiChunk = numChunks > 1;
       return h('div', null,
               h(SbSection, { title: '\uACB0\uACFC', first: true },
                       h('div', { className: 'text-sm text-zinc-400 space-y-1' },
-                              isMultiChunk
-                                ? h('p', null, '\uC774\uBBF8\uC9C0 ' + numChunks + '\uAC1C (\uC790\uB3D9 \uBD84\uD560)')
-                                : h('p', null, '\uD06C\uAE30: ' + w + ' \u00D7 ' + ht + ' px'),
+                              h('p', null, '\uD06C\uAE30: ' + w + ' \u00D7 ' + ht + ' px'),
                               h('p', null, '\uC0AC\uC6A9 \uD504\uB808\uC784: ' + st.chainLength + ' / ' + st.frameCount)
                       )
               ),
@@ -2698,12 +2616,8 @@
               h(SbSection, { title: '\uC774\uBBF8\uC9C0 \uB2E4\uC6B4\uB85C\uB4DC' },
                       h('button', {
                         className: S.btnPrimary + ' flex items-center justify-center gap-2',
-                        onClick: function() {
-                          var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-                          var canvases = st.resultCanvases && st.resultCanvases.length > 0 ? st.resultCanvases : [st.resultCanvas];
-                          downloadCanvasesAsZip(canvases, 'scroll_capture_' + ts, null);
-                        },
-                      }, h(IDownload, { size: 16 }), isMultiChunk ? 'ZIP \uB2E4\uC6B4\uB85C\uB4DC (' + numChunks + '\uAC1C)' : 'PNG \uB2E4\uC6B4\uB85C\uB4DC')
+                        onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'png', 'scroll_capture_' + ts); },
+                      }, h(IDownload, { size: 16 }), 'PNG \uB2E4\uC6B4\uB85C\uB4DC')
               ),
               h(SbSection, { title: 'OCR 실행' },
                       h('div', { className: 'mb-2' },
@@ -2712,9 +2626,9 @@
                       h('button', {
                         className: S.btnPrimary + ' flex items-center justify-center gap-2 mt-2',
                         onClick: function() { if (props.onStartOcr) props.onStartOcr(); },
-                      }, h(IType, { size: 16 }), isMultiChunk ? 'OCR \uC2E4\uD589 (' + numChunks + '\uC7A5 \ud569\uce5c\ub2e4)' : 'OCR \uC2E4\uD589')
+                      }, h(IType, { size: 16 }), 'OCR 실행')
               ),
-              h(SbSection, null, h('button', { className: S.btnGhost + ' w-full', onClick: function() { d({ type: 'SC_UPDATE', v: { phase: 'READY', resultCanvas: null, resultCanvases: [], chunkCount: 0, frameCount: 0, elapsedSec: 0, matchQuality: 0, consecutiveFails: 0, chainLength: 0, excludedFrames: 0, assembleProgress: 0, assembleDone: 0, assembleTotal: 0, assembleStartTime: 0, memoryMB: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrText: '', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } }); }, }, '\uC0C8 \uCEA1\uCC98 \uC2DC\uC791'))
+              h(SbSection, null, h('button', { className: S.btnGhost + ' w-full', onClick: function() { d({ type: 'SC_UPDATE', v: { phase: 'READY', resultCanvas: null, frameCount: 0, elapsedSec: 0, matchQuality: 0, consecutiveFails: 0, chainLength: 0, excludedFrames: 0, assembleProgress: 0, assembleDone: 0, assembleTotal: 0, assembleStartTime: 0, memoryMB: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrText: '', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } }); }, }, '\uC0C8 \uCEA1\uCC98 \uC2DC\uC791'))
       );
     }
 
@@ -2752,16 +2666,10 @@
                               h(IClipboard, { size: 16 }), '\uD14D\uC2A4\uD2B8 \uBCF5\uC0AC'),
                       h('button', { className: S.btnSecondary + ' flex items-center justify-center gap-2 mb-2', onClick: function() { if (props.onDownloadText) props.onDownloadText(); } },
                               h(IDownload, { size: 16 }), '\uD14D\uC2A4\uD2B8 \uB2E4\uC6B4\uB85C\uB4DC (.txt)'),
-                      (st.resultCanvases && st.resultCanvases.length > 0) || st.resultCanvas
-                        ? h('button', { className: S.btnSecondary + ' flex items-center justify-center gap-2', onClick: function() {
-                            var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-                            var canvases = st.resultCanvases && st.resultCanvases.length > 0 ? st.resultCanvases : [st.resultCanvas];
-                            downloadCanvasesAsZip(canvases, 'scroll_capture_' + ts, null);
-                          }},
-                            h(IDownload, { size: 16 }), st.resultCanvases && st.resultCanvases.length > 1 ? '\uC774\uBBF8\uC9C0 ZIP \uB2E4\uC6B4\uB85C\uB4DC' : '\uC774\uBBF8\uC9C0 \uB2E4\uC6B4\uB85C\uB4DC (.png)')
-                        : null
+                      st.resultCanvas ? h('button', { className: S.btnSecondary + ' flex items-center justify-center gap-2', onClick: function() { var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14); downloadCanvas(st.resultCanvas, 'png', 'scroll_capture_' + ts); } },
+                              h(IDownload, { size: 16 }), '\uC774\uBBF8\uC9C0 \uB2E4\uC6B4\uB85C\uB4DC (.png)') : null
               ),
-              h(SbSection, null, h('button', { className: S.btnGhost + ' w-full', onClick: function() { d({ type: 'SC_UPDATE', v: { phase: 'READY', resultCanvas: null, resultCanvases: [], chunkCount: 0, frameCount: 0, elapsedSec: 0, matchQuality: 0, consecutiveFails: 0, chainLength: 0, excludedFrames: 0, assembleProgress: 0, assembleDone: 0, assembleTotal: 0, assembleStartTime: 0, memoryMB: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrText: '', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } }); }, }, '\uC0C8 \uCEA1\uCC98 \uC2DC\uC791'))
+              h(SbSection, null, h('button', { className: S.btnGhost + ' w-full', onClick: function() { d({ type: 'SC_UPDATE', v: { phase: 'READY', resultCanvas: null, frameCount: 0, elapsedSec: 0, matchQuality: 0, consecutiveFails: 0, chainLength: 0, excludedFrames: 0, assembleProgress: 0, assembleDone: 0, assembleTotal: 0, assembleStartTime: 0, memoryMB: 0, pngSizeKB: 0, jpegSizeKB: 0, ocrText: '', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0 } }); }, }, '\uC0C8 \uCEA1\uCC98 \uC2DC\uC791'))
       );
     }
 
@@ -3655,14 +3563,7 @@
               ) : null,
               h('div', null,
                       h('label', { className: 'text-xs text-zinc-400 block mb-1' }, prov.hasAuth ? (st.cvAuthType === 'apiKey' ? 'API Key' : 'Access Token') : 'API Key'),
-                      h('div', { className: 'flex gap-2' },
-                              h('input', { type: 'text', placeholder: 'API \ud0a4\ub97c \uc785\ub825\ud558\uc138\uc694', className: S.select + ' flex-1 font-mono text-xs', value: keyVal, onChange: function(e) { upd(keyField, e.target.value); } }),
-                              keyVal ? h('button', {
-                                className: 'bg-zinc-600 hover:bg-zinc-500 text-zinc-300 px-2 rounded-lg text-xs flex-shrink-0',
-                                onClick: function() { navigator.clipboard && navigator.clipboard.writeText(keyVal); },
-                                title: '\ud074\ub9bd\ubcf4\ub4dc\uc5d0 \ubcf5\uc0ac',
-                              }, h(IClipboard, { size: 14 })) : null
-                      )
+                      h('input', { type: 'password', placeholder: 'API \ud0a4\ub97c \uc785\ub825\ud558\uc138\uc694', className: S.select, value: keyVal, onChange: function(e) { upd(keyField, e.target.value); } })
               ),
               prov.note ? h('div', { className: 'bg-amber-900/20 border border-amber-800/30 rounded-lg p-2' },
                       h('p', { className: 'text-xs text-amber-400/80' }, '\u26A0 Claude Max \uad6c\ub3c5(claude.ai)\uacfc Anthropic API\ub294 \ubcc4\ub3c4 \uacfc\uae08/\ud55c\ub3c4 \uccb4\uacc4\uc785\ub2c8\ub2e4.')
@@ -4206,13 +4107,10 @@
       startTime: 0,
       timerId: null,
       sampleIntervalId: null,
-      MAX_FRAMES: 10,
-      MEMORY_AUTO_STOP: 99999, // disabled — chunk by frame count only
+      MAX_FRAMES: 2000,
+      MEMORY_AUTO_STOP: 1500,
       lastAnchorDeltaY: 0,
       frameHeight: 0,
-      chunks: [],          // assembled chunk canvases [{canvas,w,h,idx}]
-      direction: 'vertical',
-      assemblingCount: 0,  // number of background chunk assemblies in progress
     });
 
     // Effect 1: Enumerate video devices (poll every 2s + devicechange)
@@ -4420,27 +4318,36 @@
       try { localStorage.setItem('scrollsnap_sidebar_w', String(sidebarWidth)); } catch(e) {}
     }, [sidebarWidth]);
 
-    // Effect 8: Copy to clipboard when scroll capture result is ready (auto-download removed — use button)
+    // Effect 8: Auto-download PNG + copy to clipboard when scroll capture result is ready
     var prevScPhaseRef = useRef(state.scrollCapture.phase);
     useEffect(function() {
       var prev = prevScPhaseRef.current;
       var cur = state.scrollCapture.phase;
       prevScPhaseRef.current = cur;
       if (cur === 'RESULT' && prev !== 'RESULT' && state.scrollCapture.resultCanvas) {
-        // Single-chunk result: copy to clipboard for quick paste
-        var canvases = captureRef.current.chunks.map(function(c) { return c.canvas; });
-        if (canvases.length === 1) {
-          canvases[0].toBlob(function(blob) {
-            if (!blob) return;
-            try {
-              var item = new ClipboardItem({ 'image/png': blob });
-              navigator.clipboard.write([item]).then(function() {
-                addToast('info', '\uC774\uBBF8\uC9C0\uAC00 \uD074\uB9BD\uBCF4\uB4DC\uC5D0 \uBCF5\uC0AC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.', '\uD074\uB9BD\uBCF4\uB4DC \uBCF5\uC0AC');
-              }).catch(function() {});
-            } catch(e) {}
-          }, 'image/png');
-        }
-        addToast('success', '\uCEA1\uCC98 \uC644\uB8CC! PNG \uB2E4\uC6B4\uB85C\uB4DC \uBC84\uD2BC\uc744 \ub20c\ub7ec\uc8fc\uc138\uc694.', '\uC870\uB9BD \uC644\uB8CC');
+        var canvas = state.scrollCapture.resultCanvas;
+        var ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        var fname = 'scroll_capture_' + ts;
+        canvas.toBlob(function(blob) {
+          if (!blob) return;
+          // Auto-download
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = fname + '.png';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+          // Copy to clipboard
+          try {
+            var item = new ClipboardItem({ 'image/png': blob });
+            navigator.clipboard.write([item]).then(function() {
+              addToast('info', '\uC774\uBBF8\uC9C0\uAC00 \uD074\uB9BD\uBCF4\uB4DC\uC5D0 \uBCF5\uC0AC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.', '\uD074\uB9BD\uBCF4\uB4DC \uBCF5\uC0AC');
+            }).catch(function() {});
+          } catch(e) {}
+          addToast('info', fname + '.png \uB2E4\uC6B4\uB85C\uB4DC \uC644\uB8CC', '\uC790\uB3D9 \uB2E4\uC6B4\uB85C\uB4DC');
+        }, 'image/png');
       }
     }, [state.scrollCapture.phase, state.scrollCapture.resultCanvas]);
 
@@ -4495,14 +4402,16 @@
 
       MergeTree.addFrame(cap.tree, imgData);
 
+      // Memory estimate: each frame contributes one buffer in-flight (others transferred away)
+      // Rough bound: ~2 frames worth of RGBA bytes at any time per worker
       var frameMB = (cw * ch * 4) / (1024 * 1024);
       var poolSize = cap.tree.pool.length;
       var memMB = Math.round(frameMB * Math.min(cap.frameCount, poolSize * 2 + 4));
 
       dispatch({ type: 'SC_UPDATE', v: { frameCount: cap.frameCount, memoryMB: memMB } });
 
-      if (cap.frameCount >= cap.MAX_FRAMES) {
-        chunkAutoFinalize();
+      if (memMB >= cap.MEMORY_AUTO_STOP || cap.frameCount >= cap.MAX_FRAMES) {
+        stopCapture();
       }
     }
 
@@ -4522,9 +4431,6 @@
       // Initialize binary tree merge — pass scroll direction so worker uses correct axis
       var poolSize = Math.min(navigator.hardwareConcurrency || 4, 8);
       var direction = state.scrollCapture.direction || 'vertical';
-      cap.direction = direction;
-      cap.chunks = [];
-      cap.assemblingCount = 0;
       cap.tree = MergeTree.init(poolSize, direction);
 
       // Wire up matchQuality: each completed merge reports overlapPx / maxOverlap ratio
@@ -4539,12 +4445,6 @@
                 : 0;
         captureRef.current.consecutiveFails = fails;
         dispatch({ type: 'SC_UPDATE', v: { matchQuality: next, consecutiveFails: fails } });
-        if (fails >= 5 && captureRef.current.active) {
-          // Scroll too fast — 5 consecutive frames with no overlap. Stop and report.
-          captureRef.current.active = false;
-          addToast('error', '\uc2a4\ud06c\ub864 \uc18d\ub3c4\uac00 \ub108\ubb34 \ube68\ub77d\ub2c8\ub2e4. \ud504\ub808\uc784 \uac04 \uc911\ubcf5\uc774 \uc5c6\uc5b4 \uaca1\uce68\uc774 \ubc1c\uc0dd\ud569\ub2c8\ub2e4. \ub354 \uccad\ucc9c\ud788 \uc2a4\ud06c\ub864\ud558\uc138\uc694.', '\uc2a4\ud06c\ub864 \uc18d\ub3c4 \ucd08\uacfc');
-          stopCapture();
-        }
       };
 
       dispatch({ type: 'SC_UPDATE', v: {
@@ -4558,12 +4458,7 @@
           excludedFrames: 0,
           segmentCount: 0,
           assembleProgress: 0,
-          assembleDone: 0,
-          assembleTotal: 0,
-          assembleStartTime: 0,
-          chunkCount: 0,
           resultCanvas: null,
-          resultCanvases: [],
         }});
 
       setTimeout(function() {
@@ -4584,83 +4479,6 @@
       }, 100);
     }
 
-    // Find the best clean cut row near the bottom of an assembled image buffer.
-    // Scans bottom `scanPx` rows for the row with lowest pixel variance (blank line between text).
-    // Returns row index (0-indexed from top). Falls back to full height if no clean row found.
-    function findTextLineBoundary(buf, w, h, scanPx) {
-      scanPx = scanPx || 300;
-      var THRESHOLD = 80; // variance below this = background/blank row
-      // Scan from bottom upward — return FIRST sufficiently blank row
-      for (var y = h - 1; y >= Math.max(0, h - scanPx); y--) {
-        var base = y * w * 4;
-        var sum = 0;
-        for (var x = 0; x < w; x++) {
-          sum += (buf[base + x * 4] + buf[base + x * 4 + 1] + buf[base + x * 4 + 2]) / 3;
-        }
-        var mean = sum / w;
-        var variance = 0;
-        for (var x = 0; x < w; x++) {
-          var lum = (buf[base + x * 4] + buf[base + x * 4 + 1] + buf[base + x * 4 + 2]) / 3;
-          variance += (lum - mean) * (lum - mean);
-        }
-        variance /= w;
-        if (variance < THRESHOLD) return y;
-      }
-      return h; // no clean row found — use full height
-    }
-
-    // Auto-chunk: finalize current tree in background, immediately start a fresh tree.
-    // Always splits regardless of whether a previous chunk is still assembling.
-    // 20-frame chunks are small enough that concurrent assemblies are safe.
-    function chunkAutoFinalize() {
-      var cap = captureRef.current;
-      if (!cap.tree || cap.tree.frameSeq === 0) return;
-
-      // Reserve slot index now to preserve insertion order even if assemblies overlap
-      var slotIdx = cap.chunks.length + cap.assemblingCount;
-      cap.assemblingCount = (cap.assemblingCount || 0) + 1;
-      var oldTree = cap.tree;
-
-      // Immediately start a fresh tree — capture continues uninterrupted
-      var poolSize = Math.min(navigator.hardwareConcurrency || 4, 8);
-      cap.tree = MergeTree.init(poolSize, cap.direction || 'vertical');
-      cap.tree.onMergeComplete = function(overlapPx, maxOverlap) {
-        var quality = maxOverlap > 0 ? Math.min(1, overlapPx / maxOverlap) : 0;
-        var prev = captureRef.current.lastMatchQuality || 0;
-        var next = Math.round((prev * 0.7 + quality * 0.3) * 100) / 100;
-        captureRef.current.lastMatchQuality = next;
-        var fails = overlapPx === 0 ? (captureRef.current.consecutiveFails || 0) + 1 : 0;
-        captureRef.current.consecutiveFails = fails;
-        dispatch({ type: 'SC_UPDATE', v: { matchQuality: next, consecutiveFails: fails } });
-        if (fails >= 5 && captureRef.current.active) {
-          captureRef.current.active = false;
-          addToast('error', '\uc2a4\ud06c\ub864 \uc18d\ub3c4\uac00 \ub108\ubb34 \ube68\ub77d\ub2c8\ub2e4. \ud504\ub808\uc784 \uac04 \uc911\ubcf5\uc774 \uc5c6\uc5b4 \uaca1\uce68\uc774 \ubc1c\uc0dd\ud569\ub2c8\ub2e4.', '\uc2a4\ud06c\ub864 \uc18d\ub3c4 \ucd08\uacfc');
-          stopCapture();
-        }
-      };
-      cap.frameCount = 0;
-
-      MergeTree.finalize(oldTree, function(item) {
-        cap.assemblingCount = Math.max(0, (cap.assemblingCount || 1) - 1);
-        if (item) {
-          var cutH = findTextLineBoundary(new Uint8Array(item.buf), item.w, item.h);
-          cutH = Math.min(cutH, 32000);
-          var chunkCanvas = document.createElement('canvas');
-          chunkCanvas.width = item.w;
-          chunkCanvas.height = cutH;
-          var ctx = chunkCanvas.getContext('2d');
-          var clampedArr = new Uint8ClampedArray(item.buf, 0, item.w * cutH * 4);
-          ctx.putImageData(new ImageData(clampedArr, item.w, cutH), 0, 0);
-          // Insert at reserved slot to preserve order
-          cap.chunks[slotIdx] = { canvas: chunkCanvas, w: item.w, h: cutH, idx: slotIdx };
-          var completed = cap.chunks.filter(Boolean).length;
-          dispatch({ type: 'SC_UPDATE', v: { chunkCount: completed } });
-          addToast('info', '\uCCAD\uD06C ' + (slotIdx + 1) + ' \uC870\uB9BD \uC644\uB8CC (\uACC4\uC18D \uCEA1\uCC98 \uC911...)', '\uC790\uB3D9 \uBD84\uD560');
-        }
-        MergeTree.destroy(oldTree);
-      });
-    }
-
     function stopCapture() {
       var cap = captureRef.current;
       cap.active = false;
@@ -4670,24 +4488,7 @@
       console.log('[ScrollSnap] Stop: ' + cap.frameCount + ' frames, tree merging...');
 
       if (!cap.tree || cap.tree.frameSeq === 0) {
-        // No frames in current segment — if we have prior chunks, go to RESULT
-        if (cap.chunks && cap.chunks.length > 0) {
-          var allCanvases = cap.chunks.map(function(c) { return c.canvas; });
-          var lastCanvas = allCanvases[allCanvases.length - 1];
-          var totalPngKB = cap.chunks.reduce(function(s, c) { return s + Math.round(c.w * c.h * 0.3 / 1024); }, 0);
-          dispatch({ type: 'SC_UPDATE', v: {
-            phase: 'RESULT',
-            resultCanvas: lastCanvas,
-            resultCanvases: allCanvases,
-            chunkCount: allCanvases.length,
-            resultWidth: lastCanvas.width,
-            resultHeight: lastCanvas.height,
-            pngSizeKB: totalPngKB,
-            jpegSizeKB: Math.round(totalPngKB * 0.4),
-          }});
-        } else {
-          dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
-        }
+        dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
         return;
       }
 
@@ -4697,72 +4498,64 @@
       var initPct = Math.min(99, Math.round(alreadyDone / totalMergesNeeded * 100));
 
       dispatch({ type: 'SC_UPDATE', v: {
-        phase: 'ASSEMBLING',
-        assembleProgress: initPct,
-        assembleDone: alreadyDone,
-        assembleTotal: totalMergesNeeded,
-        assembleStartTime: Date.now(),
-      }});
+          phase: 'ASSEMBLING',
+          assembleProgress: initPct,
+          assembleDone: alreadyDone,
+          assembleTotal: totalMergesNeeded,
+          assembleStartTime: Date.now(),
+        }});
 
       // Override onMergeComplete to report real progress during assembly
       cap.tree.onMergeComplete = function() {
         var done = cap.tree ? cap.tree.totalMerged : 0;
         var pct = Math.min(99, Math.round(done / totalMergesNeeded * 100));
         dispatch({ type: 'SC_UPDATE', v: {
-          assembleProgress: pct,
-          assembleDone: done,
-        }});
+            assembleProgress: pct,
+            assembleDone: done,
+          }});
       };
 
       MergeTree.finalize(cap.tree, function(item) {
         if (!item) {
-          // No frames in this final chunk — still show result with previously assembled chunks
-          MergeTree.destroy(cap.tree);
-          cap.tree = null;
-        } else {
-          // Apply smart text-line boundary cut for last chunk too
-          var cutH = findTextLineBoundary(new Uint8Array(item.buf), item.w, item.h);
-          cutH = Math.min(cutH, 32000);
-          var canvasW = Math.min(item.w, 32000);
-
-          var finalCanvas = document.createElement('canvas');
-          finalCanvas.width = canvasW;
-          finalCanvas.height = cutH;
-          var fCtx = finalCanvas.getContext('2d');
-          var clampedArr = new Uint8ClampedArray(item.buf, 0, canvasW * cutH * 4);
-          fCtx.putImageData(new ImageData(clampedArr, canvasW, cutH), 0, 0);
-
-          cap.chunks.push({ canvas: finalCanvas, w: canvasW, h: cutH, idx: cap.chunks.length });
-          MergeTree.destroy(cap.tree);
-          cap.tree = null;
-          cap.lastSeenGray = null;
-        }
-
-        // Collect all chunk canvases — filter out null slots from concurrent assemblies still in flight
-        var allCanvases = cap.chunks.filter(Boolean).map(function(c) { return c.canvas; });
-        if (allCanvases.length === 0) {
           dispatch({ type: 'SC_UPDATE', v: { phase: 'READY' } });
+          MergeTree.destroy(cap.tree);
+          cap.tree = null;
           return;
         }
 
-        var lastCanvas = allCanvases[allCanvases.length - 1];
-        var totalPngKB = cap.chunks.reduce(function(s, c) { return s + Math.round(c.w * c.h * 0.3 / 1024); }, 0);
+        var canvasW = item.w;
+        var canvasH = item.h;
+        if (canvasW > 32000) canvasW = 32000;
+        if (canvasH > 32000) canvasH = 32000;
+
+        var finalCanvas = document.createElement('canvas');
+        finalCanvas.width = canvasW;
+        finalCanvas.height = canvasH;
+        var fCtx = finalCanvas.getContext('2d');
+        var clampedArr = new Uint8ClampedArray(item.buf);
+        var outImgData = new ImageData(clampedArr, item.w, item.h);
+        fCtx.putImageData(outImgData, 0, 0);
+
+        var pngKB = Math.round(canvasW * canvasH * 0.3 / 1024);
+        var jpegKB = Math.round(pngKB * 0.4);
 
         dispatch({ type: 'SC_UPDATE', v: {
             phase: 'RESULT',
-            resultCanvas: lastCanvas,
-            resultCanvases: allCanvases,
-            chunkCount: allCanvases.length,
-            resultWidth: lastCanvas.width,
-            resultHeight: lastCanvas.height,
+            resultCanvas: finalCanvas,
+            resultWidth: canvasW,
+            resultHeight: canvasH,
             chainLength: cap.frameCount,
             excludedFrames: 0,
             segmentCount: cap.tree ? cap.tree.totalMerged : 0,
             assembleProgress: 100,
             assembleDone: totalMergesNeeded,
-            pngSizeKB: totalPngKB,
-            jpegSizeKB: Math.round(totalPngKB * 0.4),
+            pngSizeKB: pngKB,
+            jpegSizeKB: jpegKB,
           }});
+
+        MergeTree.destroy(cap.tree);
+        cap.tree = null;
+        cap.lastSeenGray = null;
       });
     }
 
@@ -5015,49 +4808,20 @@
 
     function scStartOcr() {
       var sc = state.scrollCapture;
-      // Support multi-chunk: run OCR on all canvases and concatenate text
-      var canvases = sc.resultCanvases && sc.resultCanvases.length > 0
-        ? sc.resultCanvases
-        : (sc.resultCanvas ? [sc.resultCanvas] : []);
-      if (canvases.length === 0) return;
+      if (!sc.resultCanvas) return;
       ocrCancelledRef.current = false;
+      // OCR always uses the full resultCanvas — crop was already applied during capture
+      var ocrCanvas = sc.resultCanvas;
       dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_PROCESSING', ocrProgress: 0, ocrChunks: 0, ocrCurrentChunk: 0, ocrText: '' } });
-
-      // Process each canvas in sequence, accumulate text
-      var allTexts = [];
-      var totalCanvases = canvases.length;
-      var globalChunksPerCanvas = []; // track internal OCR chunks per canvas for progress
-
-      function runNextCanvas(idx) {
+      OcrEngine.performOcr(ocrCanvas, sc.ocrMethod, state.settings, function(idx, total) {
         if (ocrCancelledRef.current) return;
-        if (idx >= totalCanvases) {
-          var finalText = allTexts.join('\n');
-          dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_RESULT', ocrText: finalText, ocrProgress: 100 } });
-          return;
-        }
-        OcrEngine.performOcr(canvases[idx], sc.ocrMethod, state.settings, function(chunkIdx, chunkTotal) {
-          if (ocrCancelledRef.current) return;
-          // Progress = (completed canvases + fraction of current) / total canvases
-          var overallPct = Math.round(((idx + chunkIdx / Math.max(1, chunkTotal)) / totalCanvases) * 100);
-          dispatch({ type: 'SC_UPDATE', v: {
-            ocrCurrentChunk: idx + 1,
-            ocrChunks: totalCanvases,
-            ocrProgress: overallPct,
-          }});
-        }).then(function(text) {
-          if (ocrCancelledRef.current) return;
-          allTexts[idx] = text;
-          runNextCanvas(idx + 1);
-        }).catch(function(err) {
-          console.error('OCR error (canvas ' + idx + '):', err);
-          if (!ocrCancelledRef.current) {
-            allTexts[idx] = 'OCR \uC624\uB958 (\uc774\ubbf8\uc9c0 ' + (idx + 1) + '): ' + err.message;
-            runNextCanvas(idx + 1);
-          }
-        });
-      }
-
-      runNextCanvas(0);
+        dispatch({ type: 'SC_UPDATE', v: { ocrCurrentChunk: idx + 1, ocrChunks: total, ocrProgress: Math.round((idx / total) * 100) } });
+      }).then(function(text) {
+        if (!ocrCancelledRef.current) dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_RESULT', ocrText: text, ocrProgress: 100 } });
+      }).catch(function(err) {
+        console.error('OCR error:', err);
+        if (!ocrCancelledRef.current) dispatch({ type: 'SC_UPDATE', v: { phase: 'OCR_RESULT', ocrText: 'OCR \uC624\uB958: ' + err.message } });
+      });
     }
 
     function scCancelOcr() {
