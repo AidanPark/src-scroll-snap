@@ -9,3 +9,12 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Dependencies
+node_modules/
+
+# Test data
+data/
+
+# Tools
+.sisyphus/
