@@ -582,6 +582,8 @@
       for (var d = 0; d < tree.depthQueues.length; d++) {
         var q = tree.depthQueues[d];
         if (!q) continue;
+        // Sort by seq to preserve capture order when workers finish asynchronously
+        if (q.length >= 2) q.sort(function(a, b) { return a.seq - b.seq; });
         while (q.length >= 2) {
           var slot = MergeTree._getFreeWorker(tree);
           if (!slot) return;
