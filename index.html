@@ -235,7 +235,7 @@
         if (err2 < bestErr) { bestErr = err2; bestOverlap = ov2; }
       }
 
-      return bestErr > 30 ? 0 : bestOverlap;
+      return bestErr > 50 ? 0 : bestOverlap;
     }
 
     function calcRMSVert(dA, wA, hA, dB, wB, overlap) {
@@ -281,7 +281,7 @@
         if (err2 < bestErr) { bestErr = err2; bestOverlap = ov2; }
       }
 
-      return bestErr > 30 ? 0 : bestOverlap;
+      return bestErr > 50 ? 0 : bestOverlap;
     }
 
     function calcRMSHoriz(dA, wA, hA, dB, wB, overlap) {
@@ -303,6 +303,18 @@
       return n > 0 ? Math.sqrt(sum / n / 3) : 999;
     }
 
+    // ── Hinted overlap — trust the main-thread rowMatch hint directly ──
+    // rowMatch uses SAD+gradient matching with validation, which is more robust
+    // than RMS on repetitive content (SQL, logs). RMS refinement can find false
+    // matches on similar-looking patterns, so we skip it entirely.
+    function findOverlapVertHinted(bufA, wA, hA, bufB, wB, hB, hint) {
+      return Math.min(hint, Math.min(hA, hB));
+    }
+
+    function findOverlapHorizHinted(bufA, wA, hA, bufB, wB, hB, hint) {
+      return Math.min(hint, Math.min(wA, wB));
+    }
+
     // ── Vertical merge ────────────────────────────────────────────
     function mergeFramesVert(bufA, wA, hA, bufB, wB, hB, overlapPx) {
       if (overlapPx <= 0) {
@@ -310,6 +322,17 @@
         var out = new Uint8Array(wA * outH * 4);
         out.set(new Uint8Array(bufA));
         out.set(new Uint8Array(bufB), wA * hA * 4);
+        // DEBUG: blue line at concat boundary (no overlap detected)
+        for (var dbgR = -1; dbgR <= 1; dbgR++) {
+          var bndY = hA + dbgR;
+          if (bndY >= 0 && bndY < outH) {
+            var off = bndY * wA * 4;
+            for (var dx = 0; dx < wA; dx++) {
+              out[off + dx * 4] = 0; out[off + dx * 4 + 1] = 0;
+              out[off + dx * 4 + 2] = 255; out[off + dx * 4 + 3] = 255;
+            }
+          }
+        }
         return { buf: out.buffer, w: wA, h: outH, seamRow: 0 };
       }
 
@@ -401,6 +424,20 @@
       if (outOffset >= 0 && bOffset >= 0 && bBytes > 0) {
         for (var i2 = 0; i2 < bBytes && outOffset + i2 < outData.length; i2++) {
           outData[outOffset + i2] = dB[bOffset + i2];
+        }
+      }
+
+      // DEBUG: draw red line at seam position
+      for (var dbgR = -1; dbgR <= 1; dbgR++) {
+        var seamY = cutA + dbgR;
+        if (seamY >= 0 && seamY < outH2) {
+          var off = seamY * w * 4;
+          for (var dx = 0; dx < w; dx++) {
+            outData[off + dx * 4]     = 255; // R
+            outData[off + dx * 4 + 1] = 0;   // G
+            outData[off + dx * 4 + 2] = 0;   // B
+            outData[off + dx * 4 + 3] = 255; // A
+          }
         }
       }
 
@@ -531,12 +568,23 @@
       var msg = e.data;
       var isHoriz = msg.direction === 'horizontal';
       var overlapPx, result;
-      if (isHoriz) {
-        overlapPx = findOverlapHoriz(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, msg.maxOverlap);
-        result = mergeFramesHoriz(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, overlapPx);
+      if (msg.overlapHint > 0) {
+        // Use hint from main-thread rowMatch — narrow search around hint
+        if (isHoriz) {
+          overlapPx = findOverlapHorizHinted(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, msg.overlapHint);
+          result = mergeFramesHoriz(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, overlapPx);
+        } else {
+          overlapPx = findOverlapVertHinted(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, msg.overlapHint);
+          result = mergeFramesVert(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, overlapPx);
+        }
       } else {
-        overlapPx = findOverlapVert(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, msg.maxOverlap);
-        result = mergeFramesVert(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, overlapPx);
+        if (isHoriz) {
+          overlapPx = findOverlapHoriz(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, msg.maxOverlap);
+          result = mergeFramesHoriz(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, overlapPx);
+        } else {
+          overlapPx = findOverlapVert(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, msg.maxOverlap);
+          result = mergeFramesVert(msg.bufA, msg.wA, msg.hA, msg.bufB, msg.wB, msg.hB, overlapPx);
+        }
       }
       self.postMessage({ buf: result.buf, w: result.w, h: result.h, overlapPx: overlapPx, seamRow: result.seamRow, id: msg.id }, [result.buf]);
     };
@@ -570,11 +618,15 @@
       };
     },
 
-    addFrame: function(tree, imageData) {
+    addFrame: function(tree, imageData, overlapHint) {
       var buf = imageData.data.buffer.slice(0);
-      var item = { buf: buf, w: imageData.width, h: imageData.height, seq: tree.frameSeq++, depth: 0 };
+      var hint = overlapHint || 0;
+      var item = { buf: buf, w: imageData.width, h: imageData.height, seq: tree.frameSeq++, depth: 0, overlapHint: hint, firstOverlapHint: hint };
       if (!tree.depthQueues[0]) tree.depthQueues[0] = [];
       tree.depthQueues[0].push(item);
+      if (!tree.originalFrameH) tree.originalFrameH = imageData.height;
+      if (!tree.originalFrameW) tree.originalFrameW = imageData.width;
+      if (hint > 0 && !tree.firstValidHint) tree.firstValidHint = hint;
       MergeTree.tryMergePairs(tree);
     },
 
@@ -585,6 +637,8 @@
         // Sort by seq to preserve capture order when workers finish asynchronously
         if (q.length >= 2) q.sort(function(a, b) { return a.seq - b.seq; });
         while (q.length >= 2) {
+          // At depth 0, delay pairing until a valid hint is available to avoid RMS false matches
+          if (d === 0 && !q[1].overlapHint && !tree.firstValidHint && !tree.finalizing) break;
           var slot = MergeTree._getFreeWorker(tree);
           if (!slot) return;
           var a = q.shift();
@@ -610,11 +664,21 @@
       var maxOverlap = isHoriz
               ? (itemA.w < itemB.w ? itemA.w : itemB.w)
               : (itemA.h < itemB.h ? itemA.h : itemB.h);
+      // Cap maxOverlap at original frame size for depth > 0 to prevent false matches on merged images
+      if (depth > 0) {
+        var frameCap = isHoriz ? (tree.originalFrameW || maxOverlap) : (tree.originalFrameH || maxOverlap);
+        maxOverlap = Math.min(maxOverlap, frameCap);
+      }
+      // Overlap hint: at depth 0 use itemB.overlapHint; at depth > 0 use itemB.firstOverlapHint
+      // firstOverlapHint propagates the leading-edge overlap through the merge tree
+      var overlapHint = depth === 0
+              ? (itemB.overlapHint || tree.firstValidHint || 0)
+              : (itemB.firstOverlapHint || 0);
       var dispatchTime = Date.now();
       var sizeDesc = isHoriz
               ? itemA.w + '+' + itemB.w + 'px (h=' + itemA.h + ')'
               : itemA.h + '+' + itemB.h + 'px (w=' + itemA.w + ')';
-      console.log('[MergeTree] ▶ dispatch d' + depth + ' seq=' + itemA.seq + '/' + itemB.seq + ' size=' + sizeDesc + ' worker=' + slot.id + ' pending=' + tree.pendingCount);
+      console.log('[MergeTree] ▶ dispatch d' + depth + ' seq=' + itemA.seq + '/' + itemB.seq + ' size=' + sizeDesc + (overlapHint ? ' hint=' + overlapHint : '') + ' worker=' + slot.id + ' pending=' + tree.pendingCount);
       slot.worker.onmessage = function(e) {
         slot.busy = false;
         tree.pendingCount--;
@@ -624,7 +688,9 @@
         // Track overlap quality
         tree.totalOverlapPx += r.overlapPx;
         if (tree.onMergeComplete) tree.onMergeComplete(r.overlapPx, maxOverlap);
-        var newItem = { buf: r.buf, w: r.w, h: r.h, seq: itemA.seq, depth: depth + 1 };
+        // Propagate firstOverlapHint: the leading-edge hint of itemA carries forward
+        var newItem = { buf: r.buf, w: r.w, h: r.h, seq: itemA.seq, depth: depth + 1,
+          firstOverlapHint: itemA.firstOverlapHint || itemA.overlapHint || 0 };
         if (!tree.depthQueues[depth + 1]) tree.depthQueues[depth + 1] = [];
         tree.depthQueues[depth + 1].push(newItem);
         var resultSize = isHoriz ? r.w + 'px' : r.h + 'px';
@@ -646,6 +712,7 @@
         bufA: itemA.buf, wA: itemA.w, hA: itemA.h,
         bufB: itemB.buf, wB: itemB.w, hB: itemB.h,
         maxOverlap: maxOverlap,
+        overlapHint: overlapHint,
         direction: tree.direction,
         id: depth + '_' + itemA.seq
       }, [itemA.buf, itemB.buf]);
@@ -727,6 +794,82 @@
         out[j] = (d[i] * 77 + d[i+1] * 150 + d[i+2] * 29) >> 8;
       }
       return { data: out, width: w, height: h };
+    },
+
+    // Full-frame grayscale SAD shift detection.
+    // Compares ALL pixels in the overlap region, making it robust against repeating content.
+    // Returns { deltaY, confidence } where deltaY = scroll amount in pixels.
+    findShift: function(prevGray, currGray, direction) {
+      var isVert = direction !== 'horizontal';
+      var w = prevGray.width;
+      var h = prevGray.height;
+      var pd = prevGray.data;
+      var cd = currGray.data;
+
+      var dim = isVert ? h : w;
+      var maxShift = Math.floor(dim * 0.6);
+      var minShift = 4;
+      var bestShift = 0;
+      var bestAvg = Infinity;
+
+      // Coarse scan: step=8, subsample rows(x2) and cols(x4)
+      for (var s = minShift; s <= maxShift; s += 8) {
+        var sad = 0, n = 0;
+        if (isVert) {
+          var rows = h - s;
+          for (var y = 0; y < rows; y += 2) {
+            var offP = (s + y) * w;
+            var offC = y * w;
+            for (var x = 0; x < w; x += 4) {
+              sad += Math.abs(pd[offP + x] - cd[offC + x]);
+              n++;
+            }
+            if (n > 100 && sad / n > 30) break;
+          }
+        } else {
+          var cols = w - s;
+          for (var y = 0; y < h; y += 2) {
+            for (var x = 0; x < cols; x += 4) {
+              sad += Math.abs(pd[y * w + s + x] - cd[y * w + x]);
+              n++;
+            }
+            if (n > 100 && sad / n > 30) break;
+          }
+        }
+        var avg = n > 0 ? sad / n : 999;
+        if (avg < bestAvg) { bestAvg = avg; bestShift = s; }
+      }
+
+      // Fine scan: step=1 around best, denser sampling
+      var lo = Math.max(minShift, bestShift - 8);
+      var hi = Math.min(maxShift, bestShift + 8);
+      for (var s2 = lo; s2 <= hi; s2++) {
+        var sad2 = 0, n2 = 0;
+        if (isVert) {
+          var rows2 = h - s2;
+          for (var y2 = 0; y2 < rows2; y2++) {
+            var offP2 = (s2 + y2) * w;
+            var offC2 = y2 * w;
+            for (var x2 = 0; x2 < w; x2 += 2) {
+              sad2 += Math.abs(pd[offP2 + x2] - cd[offC2 + x2]);
+              n2++;
+            }
+          }
+        } else {
+          var cols2 = w - s2;
+          for (var y2 = 0; y2 < h; y2++) {
+            for (var x2 = 0; x2 < cols2; x2 += 2) {
+              sad2 += Math.abs(pd[y2 * w + s2 + x2] - cd[y2 * w + x2]);
+              n2++;
+            }
+          }
+        }
+        var avg2 = n2 > 0 ? sad2 / n2 : 999;
+        if (avg2 < bestAvg) { bestAvg = avg2; bestShift = s2; }
+      }
+
+      var confidence = bestAvg < 5 ? 1 : (bestAvg < 15 ? 0.7 : (bestAvg < 25 ? 0.3 : 0));
+      return { deltaY: bestShift, confidence: confidence };
     },
 
     // Row-based SAD matching with early exit.
@@ -4490,12 +4633,26 @@
         if (_sn > 0 && _diff / _sn < 2) return;
       }
 
-      // Non-static frame — add to merge tree
+      // Non-static frame — compute overlap via full-frame SAD shift detection.
+      // Compares ALL pixels between consecutive frames (not just reference rows).
+      // This is robust against repeating content (SQL queries, logs, tables).
+      var overlapHint = 0;
+      if (cap.lastSeenGray) {
+        var shiftResult = CaptureEngine.findShift(cap.lastSeenGray, currGray, direction);
+        if (shiftResult.deltaY > 0 && shiftResult.confidence >= 0.3) {
+          overlapHint = currGray.height - shiftResult.deltaY;
+          if (overlapHint < 0) overlapHint = 0;
+          cap.lastOverlapHint = overlapHint;
+        } else if (cap.lastOverlapHint > 0) {
+          overlapHint = cap.lastOverlapHint;
+        }
+      }
+
       cap.frameCount++;
       if (!cap.frameHeight) cap.frameHeight = currGray.height;
       cap.lastSeenGray = currGray;
 
-      MergeTree.addFrame(cap.tree, imgData);
+      MergeTree.addFrame(cap.tree, imgData, overlapHint);
 
       var frameMB = (cw * ch * 4) / (1024 * 1024);
       var poolSize = cap.tree.pool.length;
@@ -4514,6 +4671,9 @@
       cap.canvas = null;
       cap.ctx = null;
       cap.lastSeenGray = null;
+      cap.anchorGray = null;
+      cap.lastAnchorDeltaY = 0;
+      cap.lastOverlapHint = 0;
       cap.frameCount = 0;
       cap.frameHeight = 0;
       cap.startTime = Date.now();
@@ -4641,6 +4801,8 @@
         }
       };
       cap.frameCount = 0;
+      cap.anchorGray = null;
+      cap.lastAnchorDeltaY = 0;
 
       MergeTree.finalize(oldTree, function(item) {
         cap.assemblingCount = Math.max(0, (cap.assemblingCount || 1) - 1);
